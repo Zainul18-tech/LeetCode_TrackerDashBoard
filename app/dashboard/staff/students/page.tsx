@@ -30,6 +30,7 @@ import {
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { Student, Class } from "@/types"
+import * as XLSX from "xlsx"
 import {
   Bar,
   BarChart,
@@ -83,6 +84,17 @@ type LinkFilter = "all" | "leetcode" | "github" | "none"
 // filter stays meaningful whether you're looking at 8 students or 800 —
 // there's no magic number to keep tuned as the data changes.
 type RankFilter = "all" | "top" | "least"
+
+// Accumulator shape used while building the Class Performance chart data.
+// Pulled out as a named interface (rather than an inline object type on
+// the Map generic) to keep that generic declaration simple.
+interface ChartGroupAccumulator {
+  groupLabel: string
+  totalEasy: number
+  totalMedium: number
+  totalHard: number
+  studentCount: number
+}
 
 const getRegNoFromStudent = (s: Student) => s.reg_no || s.register_number || ""
 const getStudentKey = (s: StudentWithStats) => s.id || getRegNoFromStudent(s)
@@ -427,10 +439,7 @@ export default function DepartmentStudentsPage() {
   const chartGroupedByYear = yearFilter === ALL_VALUE
 
   const classPerformance = useMemo(() => {
-    const map = new Map<
-      string,
-      { groupLabel: string; totalEasy: number; totalMedium: number; totalHard: number; studentCount: number }
-    >()
+    const map = new Map<string, ChartGroupAccumulator>()
 
     studentsForChart.forEach((s) => {
       const groupLabel = chartGroupedByYear
@@ -469,9 +478,10 @@ export default function DepartmentStudentsPage() {
       )
   }, [studentsForChart, chartGroupedByYear])
 
-  // Build a CSV of the currently filtered students and trigger a download.
-  // Purely client-side — no server round trip needed for this.
-  const exportToCsv = () => {
+  // Build an Excel workbook of the currently filtered students and trigger
+  // a download. Purely client-side via SheetJS — no server round trip
+  // needed for this.
+  const exportToExcel = () => {
     const headers = [
       "Reg No",
       "Name",
@@ -486,14 +496,6 @@ export default function DepartmentStudentsPage() {
       "Medium Solved",
       "Hard Solved",
     ]
-
-    const escapeCsvValue = (value: string | number | null | undefined) => {
-      const str = value === null || value === undefined ? "" : String(value)
-      if (str.includes(",") || str.includes('"') || str.includes("\n")) {
-        return `"${str.replace(/"/g, '""')}"`
-      }
-      return str
-    }
 
     const rows = filteredStudents.map((s) => [
       getRegNo(s),
@@ -510,20 +512,30 @@ export default function DepartmentStudentsPage() {
       s.hard_count ?? 0,
     ])
 
-    const csvContent = [headers, ...rows]
-      .map((row) => row.map(escapeCsvValue).join(","))
-      .join("\n")
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows])
 
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement("a")
-    link.href = url
+    // A few reasonable column widths so the sheet is readable without
+    // manual resizing.
+    worksheet["!cols"] = [
+      { wch: 14 }, // Reg No
+      { wch: 22 }, // Name
+      { wch: 14 }, // Department
+      { wch: 6 }, // Year
+      { wch: 9 }, // Section
+      { wch: 20 }, // LeetCode Username
+      { wch: 28 }, // GitHub Link
+      { wch: 12 }, // Current Streak
+      { wch: 12 }, // Total Solved
+      { wch: 10 }, // Easy Solved
+      { wch: 12 }, // Medium Solved
+      { wch: 10 }, // Hard Solved
+    ]
+
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Students")
+
     const deptSlug = (staff?.department || "department").toLowerCase().replace(/\s+/g, "-")
-    link.download = `${deptSlug}-students-${new Date().toISOString().slice(0, 10)}.csv`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
+    XLSX.writeFile(workbook, `${deptSlug}-students-${new Date().toISOString().slice(0, 10)}.xlsx`)
   }
 
   if (loading) {
@@ -734,9 +746,9 @@ export default function DepartmentStudentsPage() {
             </Dialog>
 
             {/* Export button */}
-            <Button variant="outline" size="sm" className="gap-2" onClick={exportToCsv}>
+            <Button variant="outline" size="sm" className="gap-2" onClick={exportToExcel}>
               <Download className="h-4 w-4" />
-              Export
+              Export Excel
             </Button>
           </div>
         </div>
