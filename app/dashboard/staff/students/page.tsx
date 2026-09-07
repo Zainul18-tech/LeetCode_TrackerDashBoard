@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState, useEffect } from "react"
 import DashboardLayout from "@/components/layout/DashboardLayout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -24,8 +24,6 @@ import {
   Filter,
   Download,
   X,
-  TrendingUp,
-  TrendingDown,
 } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
@@ -292,16 +290,22 @@ export default function DepartmentStudentsPage() {
     [classes, yearFilter]
   )
 
-  // Reset the class filter if it's no longer valid for the selected year
-  useEffect(() => {
-    if (classFilter !== ALL_VALUE && !classesForYear.some((c) => c.id === classFilter)) {
-      setClassFilter(ALL_VALUE)
-    }
-  }, [classesForYear, classFilter])
+  // Derived, not stored. Previously this was reset via a useEffect that
+  // called setClassFilter(ALL_VALUE) whenever the selected class fell
+  // outside the newly selected year — that's a "setState synchronously in
+  // an effect" anti-pattern (it forces an extra render pass and React
+  // warns about it). Instead we simply compute, at render time, whether
+  // the stored classFilter is still valid for the current year, and treat
+  // it as "all" on the fly if not. No effect needed, no extra render,
+  // and the UI still shows/filters exactly the same way.
+  const effectiveClassFilter = useMemo(() => {
+    if (classFilter === ALL_VALUE) return ALL_VALUE
+    return classesForYear.some((c) => c.id === classFilter) ? classFilter : ALL_VALUE
+  }, [classFilter, classesForYear])
 
   const activeFilterCount =
     (yearFilter !== ALL_VALUE ? 1 : 0) +
-    (classFilter !== ALL_VALUE ? 1 : 0) +
+    (effectiveClassFilter !== ALL_VALUE ? 1 : 0) +
     (linkFilter !== ALL_VALUE ? 1 : 0) +
     (solvedRank !== "all" ? 1 : 0) +
     (hardRank !== "all" ? 1 : 0) +
@@ -323,7 +327,8 @@ export default function DepartmentStudentsPage() {
 
     const matchesYear = yearFilter === ALL_VALUE || String(s.year) === yearFilter
 
-    const selectedClass = classFilter === ALL_VALUE ? null : classes.find((c) => c.id === classFilter)
+    const selectedClass =
+      effectiveClassFilter === ALL_VALUE ? null : classes.find((c) => c.id === effectiveClassFilter)
     const matchesClass = !selectedClass || (s.year === selectedClass.year && s.section === selectedClass.section)
 
     const hasLeetcode = Boolean(s.leetcode_username)
@@ -345,7 +350,7 @@ export default function DepartmentStudentsPage() {
     students,
     searchTerm,
     yearFilter,
-    classFilter,
+    effectiveClassFilter,
     linkFilter,
     classes,
   ])
@@ -422,7 +427,8 @@ export default function DepartmentStudentsPage() {
   // chart is for comparing groups, not showing whoever the ranking picked.
   const studentsForChart = students.filter((s) => {
     const matchesYear = yearFilter === ALL_VALUE || String(s.year) === yearFilter
-    const selectedClass = classFilter === ALL_VALUE ? null : classes.find((c) => c.id === classFilter)
+    const selectedClass =
+      effectiveClassFilter === ALL_VALUE ? null : classes.find((c) => c.id === effectiveClassFilter)
     const matchesClass = !selectedClass || (s.year === selectedClass.year && s.section === selectedClass.section)
 
     const hasLeetcode = Boolean(s.leetcode_username)
@@ -604,7 +610,10 @@ export default function DepartmentStudentsPage() {
 
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Class</label>
-                  <Select value={classFilter} onValueChange={setClassFilter}>
+                  <Select
+                    value={effectiveClassFilter}
+                    onValueChange={setClassFilter}
+                  >
                     <SelectTrigger className="h-9">
                       <SelectValue placeholder="All classes" />
                     </SelectTrigger>
@@ -784,7 +793,7 @@ export default function DepartmentStudentsPage() {
               <CardDescription>
                 Avg. Easy / Medium / Hard solved per student
                 {chartGroupedByYear ? ", by year" : `, by section (Year ${yearFilter})`}
-                {classFilter !== ALL_VALUE || linkFilter !== ALL_VALUE ? " (filtered)" : ""}
+                {effectiveClassFilter !== ALL_VALUE || linkFilter !== ALL_VALUE ? " (filtered)" : ""}
               </CardDescription>
             </CardHeader>
             <CardContent>
