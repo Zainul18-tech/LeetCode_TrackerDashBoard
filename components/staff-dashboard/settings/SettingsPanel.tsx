@@ -74,6 +74,8 @@ export default function SettingsPanel({ onStaffUpdate }: SettingsPanelProps) {
   const [saveError, setSaveError] = useState<string | null>(null)
 
   const [name, setName] = useState("")
+  // Email is frozen/read-only (see Profile tab) — no setter is wired to
+  // its input on purpose. It's still tracked in state purely for display.
   const [email, setEmail] = useState("")
   const [weeklyReports, setWeeklyReports] = useState(true)
   const [systemAlerts, setSystemAlerts] = useState(true)
@@ -181,9 +183,10 @@ export default function SettingsPanel({ onStaffUpdate }: SettingsPanelProps) {
     setSaveError(null)
 
     const supabase = createClient()
+    // Email is frozen — only `name` is ever sent to the update.
     const { data: updatedRow, error } = await supabase
       .from("staff")
-      .update({ name, email })
+      .update({ name })
       .eq("id", staff.id)
       .select("*")
       .maybeSingle()
@@ -191,16 +194,11 @@ export default function SettingsPanel({ onStaffUpdate }: SettingsPanelProps) {
     setIsSaving(false)
 
     if (error) {
-      // staff.email has a unique constraint — surface that clearly
-      setSaveError(
-        error.code === "23505"
-          ? "That email is already in use by another staff account."
-          : error.message
-      )
+      setSaveError(error.message)
       return
     }
 
-    const nextStaff = updatedRow || { ...staff, name, email }
+    const nextStaff = updatedRow || { ...staff, name }
     setStaff(nextStaff)
     onStaffUpdate?.(nextStaff)
     setSaveSuccess(true)
@@ -383,10 +381,18 @@ export default function SettingsPanel({ onStaffUpdate }: SettingsPanelProps) {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Email Address</label>
+                  <label className="text-sm font-medium">
+                    Email Address{" "}
+                    <span className="font-normal text-gray-400 dark:text-gray-500">(cannot be changed)</span>
+                  </label>
                   <div className="relative">
                     <Mail className="absolute left-3 top-2.5 h-4 w-4 text-gray-500" />
-                    <Input value={email} onChange={(e) => setEmail(e.target.value)} className="pl-9" />
+                    <Input
+                      value={email}
+                      readOnly
+                      disabled
+                      className="pl-9 cursor-not-allowed opacity-70"
+                    />
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -419,7 +425,7 @@ export default function SettingsPanel({ onStaffUpdate }: SettingsPanelProps) {
             <CardHeader>
               <CardTitle>Class Assignments</CardTitle>
               <CardDescription>
-                Type a status for each class you're assigned to as Tutor or Class Advisor, then press
+                Type a status for each class you are assigned to as Tutor or Class Advisor, then press
                 Enter or Save.
               </CardDescription>
             </CardHeader>
@@ -436,7 +442,7 @@ export default function SettingsPanel({ onStaffUpdate }: SettingsPanelProps) {
                 <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
                   <ClipboardList className="h-8 w-8 text-gray-400" />
                   <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">
-                    You don't have any class assignments yet. Ask your HOD/admin to assign you as
+                    No class assignments yet. Ask your HOD/admin to assign you as
                     a Tutor or Class Advisor for a class.
                   </p>
                 </div>
