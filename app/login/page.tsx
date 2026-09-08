@@ -48,8 +48,8 @@ function LoginForm() {
       {/* Left Side - Image and College Name */}
       <div className="relative hidden lg:block lg:w-1/2">
         <Image
-          src="https://assets.findmycollege.com/FMC_IMAGES/28006/assets/Arts-college.jpg"
-          alt="Dr. N.G.P. Institute of Technology Campus"
+          src="https://www.drngpit.ac.in/images/about/sustainability-at-ngpitech/sustainable-building.jpg"
+          alt="Dr. N.G.P. Institute of Technology"
           fill
           className="object-cover"
           priority
