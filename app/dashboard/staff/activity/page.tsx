@@ -116,20 +116,16 @@ type ActivityWithDetails = ActivityRow & {
 ========================================================= */
 
 const ACTIVITY_TYPES = [
-  "Academic Activity",
-  "Industrial Visit",
-  "Workshop",
-  "Seminar",
-  "Guest Lecture",
-  "Placement Activity",
-  "Parent-Teacher Meeting",
-  "Student Development",
-  "Club Activity",
-  "Competition",
-  "Training",
-  "Certification",
-  "Department Event",
-  "Other",
+  "Mock Interview",
+  "Technical Interview",
+  "Domain-Specific Interview",
+  "MCQ Test",
+  "Group Discussion (GD)",
+  "Aptitude Test",
+  "Verbal Test",
+  "Vocabulary Practice",
+  "DSA Test",
+  "other",
 ]
 
 /* =========================================================
