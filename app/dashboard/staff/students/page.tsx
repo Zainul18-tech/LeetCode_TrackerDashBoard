@@ -74,18 +74,12 @@ type StudentWithStats = Student & {
   total_solved?: number
 }
 
-type LinkFilter = "all" | "leetcode" | "github" | "none"
-
-// Ranking-based filters. Rather than a fixed numeric threshold (e.g.
-// "solved >= 10"), "top" / "least" carve off a relative slice of whoever
-// is currently in view, ranked by the metric in question. This way the
-// filter stays meaningful whether you're looking at 8 students or 800 —
-// there's no magic number to keep tuned as the data changes.
+// Sort-direction selects. These reorder the visible list only -- they
+// never hide anyone. Every student that passes the base filters
+// (search/dept/year/class) stays visible, just in a different order.
 type RankFilter = "all" | "top" | "least"
 
 // Accumulator shape used while building the Class Performance chart data.
-// Pulled out as a named interface (rather than an inline object type on
-// the Map generic) to keep that generic declaration simple.
 interface ChartGroupAccumulator {
   groupLabel: string
   totalEasy: number
@@ -99,39 +93,6 @@ const getStudentKey = (s: StudentWithStats) => s.id || getRegNoFromStudent(s)
 
 const ALL_VALUE = "all"
 
-// The fraction of the current pool that counts as "top" or "least".
-// Not a data threshold — a ranking cutoff, recomputed against whatever
-// students are currently in view.
-const RANK_SLICE = 0.25
-
-/**
- * Given a pool of students and a metric, returns the set of student keys
- * that fall in the top slice or bottom slice by that metric. Ties at the
- * cutoff are all included (so the slice may be slightly larger than exactly
- * 25%), and on very small pools it always returns at least one student
- * rather than rounding down to zero.
- */
-function getRankSet(
-  pool: StudentWithStats[],
-  metric: (s: StudentWithStats) => number,
-  mode: "top" | "least"
-): Set<string> {
-  if (pool.length === 0) return new Set()
-
-  const sorted = [...pool].sort((a, b) => metric(b) - metric(a))
-  const cutoffCount = Math.max(1, Math.ceil(sorted.length * RANK_SLICE))
-
-  if (mode === "top") {
-    const cutoffValue = metric(sorted[cutoffCount - 1])
-    return new Set(sorted.filter((s) => metric(s) >= cutoffValue).map(getStudentKey))
-  }
-
-  // "least" — bottom slice, i.e. worst performers / lowest values
-  const bottomSorted = [...pool].sort((a, b) => metric(a) - metric(b))
-  const cutoffValue = metric(bottomSorted[cutoffCount - 1])
-  return new Set(bottomSorted.filter((s) => metric(s) <= cutoffValue).map(getStudentKey))
-}
-
 export default function DepartmentStudentsPage() {
   const [staff, setStaff] = useState<Staff | null>(null)
   const [classes, setClasses] = useState<Class[]>([])
@@ -142,11 +103,11 @@ export default function DepartmentStudentsPage() {
   // Search + filter state
   const [searchTerm, setSearchTerm] = useState("")
   const [yearFilter, setYearFilter] = useState<string>(ALL_VALUE)
-  const [classFilter, setClassFilter] = useState<string>(ALL_VALUE) // class id, replaces old section filter
-  const [linkFilter, setLinkFilter] = useState<LinkFilter>(ALL_VALUE as LinkFilter)
-  const [solvedRank, setSolvedRank] = useState<RankFilter>("all") // "high coding" ranking
-  const [hardRank, setHardRank] = useState<RankFilter>("all") // "high hard problems" ranking
-  const [streakRank, setStreakRank] = useState<RankFilter>("all") // streak high/low ranking
+  const [classFilter, setClassFilter] = useState<string>(ALL_VALUE) // class id
+  const [deptFilter, setDeptFilter] = useState<string>(ALL_VALUE) // department name
+  const [solvedRank, setSolvedRank] = useState<RankFilter>("all") // sort by problems solved
+  const [hardRank, setHardRank] = useState<RankFilter>("all") // sort by hard problems solved
+  const [streakRank, setStreakRank] = useState<RankFilter>("all") // sort by streak
   const [filterOpen, setFilterOpen] = useState(false)
 
   // Top ranking dialog
@@ -168,9 +129,7 @@ export default function DepartmentStudentsPage() {
         return
       }
 
-      // 2. Resolve their staff profile — we only need the department here,
-      //    since this page shows every student in that department
-      //    regardless of which classes this staff member is assigned to.
+      // 2. Resolve their staff profile
       const { data: staffRow, error: staffError } = await supabase
         .from("staff")
         .select("*")
@@ -193,13 +152,11 @@ export default function DepartmentStudentsPage() {
 
       setStaff(staffRow)
 
-      // 3. Every class in this department (used to populate the Year /
-      //    Class filter options), not just classes this staff is
-      //    assigned to.
-      const { data: deptClasses, error: classesError } = await supabase
+      // 3. Every class (across all departments) -- the Department filter
+      //    lets the user narrow this down client-side.
+      const { data: allClasses, error: classesError } = await supabase
         .from("classes")
         .select("*")
-        .ilike("department", staffRow.department)
         .order("year", { ascending: true })
         .order("section", { ascending: true })
 
@@ -209,14 +166,15 @@ export default function DepartmentStudentsPage() {
         return
       }
 
-      setClasses(deptClasses || [])
+      setClasses(allClasses || [])
 
-      // 4. Every student in this department — the whole point of this page.
+      // 4. Every student (across all departments), ordered by reg_no by
+      //    default so the list has a stable, predictable base order
+      //    before any search/filter/sort is applied.
       const { data: studentsResult, error: studentsError } = await supabase
         .from("students")
         .select("*")
-        .ilike("department", staffRow.department)
-        .order("name", { ascending: true })
+        .order("reg_no", { ascending: true })
 
       if (studentsError) {
         setError(studentsError.message)
@@ -273,48 +231,64 @@ export default function DepartmentStudentsPage() {
 
   const getRegNo = getRegNoFromStudent
 
-  // Distinct years available in this department, for the Year filter
-  const years = useMemo(
-    () => Array.from(new Set(classes.map((c) => c.year).filter((y): y is number => y != null))).sort(
-      (a, b) => a - b
-    ),
+  // Distinct departments available, for the Department filter
+  const departments = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          classes
+            .map((c) => (c as Class & { department?: string }).department)
+            .filter((d): d is string => Boolean(d))
+        )
+      ).sort(),
     [classes]
   )
 
-  const classLabel = (c: Class) => c.name || `Y${c.year} · Section ${c.section}`
+  // Distinct years available, for the Year filter (narrowed to the
+  // selected department if one is picked)
+  const years = useMemo(() => {
+    const scoped =
+      deptFilter === ALL_VALUE
+        ? classes
+        : classes.filter((c) => (c as Class & { department?: string }).department === deptFilter)
+    return Array.from(new Set(scoped.map((c) => c.year).filter((y): y is number => y != null))).sort(
+      (a, b) => a - b
+    )
+  }, [classes, deptFilter])
 
-  // Classes available for the Class dropdown — narrowed to the selected
-  // year, or every class in the department if "All years" is picked.
+  const classLabel = (c: Class) => c.name || `Y${c.year} - Section ${c.section}`
+
+  // Classes available for the Class dropdown -- narrowed to the selected
+  // department and year.
   const classesForYear = useMemo(
-    () => (yearFilter === ALL_VALUE ? classes : classes.filter((c) => String(c.year) === yearFilter)),
-    [classes, yearFilter]
+    () =>
+      classes.filter((c) => {
+        const matchesDept =
+          deptFilter === ALL_VALUE || (c as Class & { department?: string }).department === deptFilter
+        const matchesYear = yearFilter === ALL_VALUE || String(c.year) === yearFilter
+        return matchesDept && matchesYear
+      }),
+    [classes, deptFilter, yearFilter]
   )
 
-  // Derived, not stored. Previously this was reset via a useEffect that
-  // called setClassFilter(ALL_VALUE) whenever the selected class fell
-  // outside the newly selected year — that's a "setState synchronously in
-  // an effect" anti-pattern (it forces an extra render pass and React
-  // warns about it). Instead we simply compute, at render time, whether
-  // the stored classFilter is still valid for the current year, and treat
-  // it as "all" on the fly if not. No effect needed, no extra render,
-  // and the UI still shows/filters exactly the same way.
+  // Derived, not stored -- avoids a "setState in an effect" round trip.
   const effectiveClassFilter = useMemo(() => {
     if (classFilter === ALL_VALUE) return ALL_VALUE
     return classesForYear.some((c) => c.id === classFilter) ? classFilter : ALL_VALUE
   }, [classFilter, classesForYear])
 
   const activeFilterCount =
+    (deptFilter !== ALL_VALUE ? 1 : 0) +
     (yearFilter !== ALL_VALUE ? 1 : 0) +
     (effectiveClassFilter !== ALL_VALUE ? 1 : 0) +
-    (linkFilter !== ALL_VALUE ? 1 : 0) +
     (solvedRank !== "all" ? 1 : 0) +
     (hardRank !== "all" ? 1 : 0) +
     (streakRank !== "all" ? 1 : 0)
 
   const clearFilters = () => {
+    setDeptFilter(ALL_VALUE)
     setYearFilter(ALL_VALUE)
     setClassFilter(ALL_VALUE)
-    setLinkFilter(ALL_VALUE as LinkFilter)
     setSolvedRank("all")
     setHardRank("all")
     setStreakRank("all")
@@ -325,62 +299,80 @@ export default function DepartmentStudentsPage() {
       s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       getRegNo(s).toLowerCase().includes(searchTerm.toLowerCase())
 
+    const matchesDept = deptFilter === ALL_VALUE || s.department === deptFilter
+
     const matchesYear = yearFilter === ALL_VALUE || String(s.year) === yearFilter
 
     const selectedClass =
       effectiveClassFilter === ALL_VALUE ? null : classes.find((c) => c.id === effectiveClassFilter)
     const matchesClass = !selectedClass || (s.year === selectedClass.year && s.section === selectedClass.section)
 
-    const hasLeetcode = Boolean(s.leetcode_username)
-    const hasGithub = Boolean(s.github_link && s.github_link !== "link")
-    const matchesLink =
-      linkFilter === ALL_VALUE ||
-      (linkFilter === "leetcode" && hasLeetcode) ||
-      (linkFilter === "github" && hasGithub) ||
-      (linkFilter === "none" && !hasLeetcode && !hasGithub)
-
-    return matchesSearch && matchesYear && matchesClass && matchesLink
+    return matchesSearch && matchesDept && matchesYear && matchesClass
   }
 
-  // Pool the ranking filters are computed against: everyone who passes
-  // search / year / class / link filters. Ranking is relative to THIS
-  // pool, so e.g. "Top" solved re-ranks itself when you narrow to a
-  // single class.
+  // Everyone who passes search / dept / year / class filters. This is the
+  // full visible set -- sorting below never removes anyone from it.
   const basePool = useMemo(() => students.filter(matchesBaseFilters), [
     students,
     searchTerm,
+    deptFilter,
     yearFilter,
     effectiveClassFilter,
-    linkFilter,
     classes,
   ])
 
-  const solvedRankSet = useMemo(
-    () => (solvedRank === "all" ? null : getRankSet(basePool, (s) => s.total_solved ?? 0, solvedRank)),
-    [basePool, solvedRank]
-  )
-  const hardRankSet = useMemo(
-    () => (hardRank === "all" ? null : getRankSet(basePool, (s) => s.hard_count ?? 0, hardRank)),
-    [basePool, hardRank]
-  )
-  const streakRankSet = useMemo(
-    () => (streakRank === "all" ? null : getRankSet(basePool, (s) => s.current_streak ?? 0, streakRank)),
-    [basePool, streakRank]
-  )
+  // Sort the base pool by whichever ranking selects are active, without
+  // dropping any student.
+  //
+  // Previously this used a fixed priority chain (Problems solved, then
+  // Hard, then Streak) where later keys only broke ties in the earlier
+  // ones. Since total_solved values are almost always unique, the later
+  // keys effectively never ran -- picking "Streak" alongside "Problems
+  // solved" had no visible effect.
+  //
+  // Instead, each active key now contributes a RANK POSITION (1 = best
+  // for that metric, given its own top/least direction), and a student's
+  // final order is by the AVERAGE of their ranks across every active key.
+  // That way two selected criteria are blended together -- someone who
+  // scores well on both selected metrics rises above someone who only
+  // dominates one of them.
+  const filteredStudents = useMemo(() => {
+    const activeKeys: { mode: RankFilter; metric: (s: StudentWithStats) => number }[] = [
+      { mode: solvedRank, metric: (s) => s.total_solved ?? 0 },
+      { mode: hardRank, metric: (s) => s.hard_count ?? 0 },
+      { mode: streakRank, metric: (s) => s.current_streak ?? 0 },
+    ].filter((k) => k.mode !== "all")
 
-  const filteredStudents = basePool.filter((s) => {
-    const key = getStudentKey(s)
-    if (solvedRankSet && !solvedRankSet.has(key)) return false
-    if (hardRankSet && !hardRankSet.has(key)) return false
-    if (streakRankSet && !streakRankSet.has(key)) return false
-    return true
-  })
+    if (activeKeys.length === 0) {
+      // No ranking sort active -- fall back to reg_no order so the list
+      // stays predictable rather than whatever order the data happened
+      // to load in.
+      return [...basePool].sort((a, b) => getRegNo(a).localeCompare(getRegNo(b), undefined, { numeric: true }))
+    }
 
-  // Which year's leaderboard the Top Ranking dialog shows. If the person
-  // has picked a specific year in the Filters popover, honor that. If not
-  // (year filter is "All years"), default to the senior-most year: Year 4
-  // if the department has one, otherwise Year 3, otherwise just the
-  // highest year that actually exists.
+    // Build a rank-position map (student key -> 1-based rank) for one
+    // metric/direction, computed over the current basePool only.
+    const buildRankMap = (metric: (s: StudentWithStats) => number, mode: RankFilter) => {
+      const sorted = [...basePool].sort((a, b) =>
+        mode === "top" ? metric(b) - metric(a) : metric(a) - metric(b)
+      )
+      const map = new Map<string, number>()
+      sorted.forEach((s, idx) => map.set(getStudentKey(s), idx + 1))
+      return map
+    }
+
+    const rankMaps = activeKeys.map(({ metric, mode }) => buildRankMap(metric, mode))
+
+    const averageRank = (s: StudentWithStats) => {
+      const key = getStudentKey(s)
+      const total = rankMaps.reduce((sum, map) => sum + (map.get(key) ?? Number.MAX_SAFE_INTEGER), 0)
+      return total / rankMaps.length
+    }
+
+    return [...basePool].sort((a, b) => averageRank(a) - averageRank(b))
+  }, [basePool, solvedRank, hardRank, streakRank])
+
+  // Which year's leaderboard the Top Ranking dialog shows.
   const defaultRankingYear = useMemo(() => {
     if (years.includes(4)) return 4
     if (years.includes(3)) return 3
@@ -390,16 +382,22 @@ export default function DepartmentStudentsPage() {
   const rankingYear = yearFilter !== ALL_VALUE ? Number(yearFilter) : defaultRankingYear
 
   const topRanked = useMemo(() => {
-    const pool = rankingYear != null ? students.filter((s) => s.year === rankingYear) : students
+    let pool = students
+    if (deptFilter !== ALL_VALUE) pool = pool.filter((s) => s.department === deptFilter)
+    if (rankingYear != null) pool = pool.filter((s) => s.year === rankingYear)
     return [...pool].sort((a, b) => (b.total_solved || 0) - (a.total_solved || 0)).slice(0, 10)
-  }, [students, rankingYear])
+  }, [students, deptFilter, rankingYear])
 
-  const managingLabel = staff ? `${staff.department} — All Sections (${classes.length} classes)` : ""
+  const managingLabel = staff
+    ? deptFilter === ALL_VALUE
+      ? `All Departments (${classes.length} classes)`
+      : `${deptFilter} -- All Sections (${classesForYear.length} classes)`
+    : ""
 
   const kpis = staff
     ? [
         {
-          title: "Total Students (Dept)",
+          title: "Total Students",
           value: students.length.toString(),
           icon: Users,
           desc: managingLabel,
@@ -413,33 +411,21 @@ export default function DepartmentStudentsPage() {
                 ).toString()
               : "0",
           icon: Trophy,
-          desc: "Across department",
+          desc: "Across all students",
         },
       ]
     : []
 
-  // Which class/year is performing best. When "All years" is selected in
-  // the filter, group by year (Y1, Y2, Y3...) so you can compare years at
-  // a glance. Once a specific year is picked, drill down and group by
-  // section within that year (Y3 A, Y3 B, Y3 C...) instead. Each bar is
-  // stacked from the group's average Easy / Medium / Hard solved per
-  // student. Ignores the free-text search and the ranking filters — this
-  // chart is for comparing groups, not showing whoever the ranking picked.
+  // Which class/year is performing best. Ignores search + ranking sort --
+  // this chart is for comparing groups.
   const studentsForChart = students.filter((s) => {
+    const matchesDept = deptFilter === ALL_VALUE || s.department === deptFilter
     const matchesYear = yearFilter === ALL_VALUE || String(s.year) === yearFilter
     const selectedClass =
       effectiveClassFilter === ALL_VALUE ? null : classes.find((c) => c.id === effectiveClassFilter)
     const matchesClass = !selectedClass || (s.year === selectedClass.year && s.section === selectedClass.section)
 
-    const hasLeetcode = Boolean(s.leetcode_username)
-    const hasGithub = Boolean(s.github_link && s.github_link !== "link")
-    const matchesLink =
-      linkFilter === ALL_VALUE ||
-      (linkFilter === "leetcode" && hasLeetcode) ||
-      (linkFilter === "github" && hasGithub) ||
-      (linkFilter === "none" && !hasLeetcode && !hasGithub)
-
-    return matchesYear && matchesClass && matchesLink
+    return matchesDept && matchesYear && matchesClass
   })
 
   const chartGroupedByYear = yearFilter === ALL_VALUE
@@ -477,16 +463,13 @@ export default function DepartmentStudentsPage() {
           totalAvg: Math.round((avgEasy + avgMedium + avgHard) * 10) / 10,
         }
       })
-      // Sort by group label when grouped by year (Y1, Y2, Y3...) so it
-      // reads naturally left-to-right instead of by performance.
       .sort((a, b) =>
         chartGroupedByYear ? a.groupLabel.localeCompare(b.groupLabel) : b.totalAvg - a.totalAvg
       )
   }, [studentsForChart, chartGroupedByYear])
 
-  // Build an Excel workbook of the currently filtered students and trigger
-  // a download. Purely client-side via SheetJS — no server round trip
-  // needed for this.
+  // Build an Excel workbook of the currently shown students and trigger a
+  // download. Purely client-side via SheetJS.
   const exportToExcel = () => {
     const headers = [
       "Reg No",
@@ -520,8 +503,6 @@ export default function DepartmentStudentsPage() {
 
     const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows])
 
-    // A few reasonable column widths so the sheet is readable without
-    // manual resizing.
     worksheet["!cols"] = [
       { wch: 14 }, // Reg No
       { wch: 22 }, // Name
@@ -540,7 +521,9 @@ export default function DepartmentStudentsPage() {
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, worksheet, "Students")
 
-    const deptSlug = (staff?.department || "department").toLowerCase().replace(/\s+/g, "-")
+    const deptSlug = (deptFilter !== ALL_VALUE ? deptFilter : staff?.department || "department")
+      .toLowerCase()
+      .replace(/\s+/g, "-")
     XLSX.writeFile(workbook, `${deptSlug}-students-${new Date().toISOString().slice(0, 10)}.xlsx`)
   }
 
@@ -592,6 +575,23 @@ export default function DepartmentStudentsPage() {
                 </div>
 
                 <div className="space-y-2">
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Department</label>
+                  <Select value={deptFilter} onValueChange={setDeptFilter}>
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder="All departments" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL_VALUE}>All departments</SelectItem>
+                      {departments.map((d) => (
+                        <SelectItem key={d} value={d}>
+                          {d}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Year</label>
                   <Select value={yearFilter} onValueChange={setYearFilter}>
                     <SelectTrigger className="h-9">
@@ -628,38 +628,21 @@ export default function DepartmentStudentsPage() {
                   </Select>
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                    Linked profiles
-                  </label>
-                  <Select value={linkFilter} onValueChange={(v) => setLinkFilter(v as LinkFilter)}>
-                    <SelectTrigger className="h-9">
-                      <SelectValue placeholder="All students" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={ALL_VALUE}>All students</SelectItem>
-                      <SelectItem value="leetcode">LeetCode linked</SelectItem>
-                      <SelectItem value="github">GitHub linked</SelectItem>
-                      <SelectItem value="none">No profiles linked</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
                 <div className="border-t pt-3 space-y-3 dark:border-gray-800">
                   <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                    Ranking (relative to students currently shown)
+                    Sort by (all students still shown)
                   </p>
 
                   <div className="space-y-2">
                     <label className="text-xs text-gray-500 dark:text-gray-400">Problems solved</label>
                     <Select value={solvedRank} onValueChange={(v) => setSolvedRank(v as RankFilter)}>
                       <SelectTrigger className="h-9">
-                        <SelectValue placeholder="All" />
+                        <SelectValue placeholder="No sort" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">All</SelectItem>
-                        <SelectItem value="top">Top (high coding)</SelectItem>
-                        <SelectItem value="least">Least (very low)</SelectItem>
+                        <SelectItem value="all">No sort</SelectItem>
+                        <SelectItem value="top">Highest first</SelectItem>
+                        <SelectItem value="least">Lowest first</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -668,12 +651,12 @@ export default function DepartmentStudentsPage() {
                     <label className="text-xs text-gray-500 dark:text-gray-400">Hard problems solved</label>
                     <Select value={hardRank} onValueChange={(v) => setHardRank(v as RankFilter)}>
                       <SelectTrigger className="h-9">
-                        <SelectValue placeholder="All" />
+                        <SelectValue placeholder="No sort" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">All</SelectItem>
-                        <SelectItem value="top">Top (high hard)</SelectItem>
-                        <SelectItem value="least">Least (very low)</SelectItem>
+                        <SelectItem value="all">No sort</SelectItem>
+                        <SelectItem value="top">Highest first</SelectItem>
+                        <SelectItem value="least">Lowest first</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -682,12 +665,12 @@ export default function DepartmentStudentsPage() {
                     <label className="text-xs text-gray-500 dark:text-gray-400">Streak</label>
                     <Select value={streakRank} onValueChange={(v) => setStreakRank(v as RankFilter)}>
                       <SelectTrigger className="h-9">
-                        <SelectValue placeholder="All" />
+                        <SelectValue placeholder="No sort" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">All</SelectItem>
-                        <SelectItem value="top">Top (high streak)</SelectItem>
-                        <SelectItem value="least">Least (very low)</SelectItem>
+                        <SelectItem value="all">No sort</SelectItem>
+                        <SelectItem value="top">Highest first</SelectItem>
+                        <SelectItem value="least">Lowest first</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -706,7 +689,8 @@ export default function DepartmentStudentsPage() {
               <DialogContent className="max-w-md">
                 <DialogHeader>
                   <DialogTitle>
-                    Top 10 Students{rankingYear != null ? ` — Year ${rankingYear}` : ""}
+                    Top 10 Students{rankingYear != null ? ` -- Year ${rankingYear}` : ""}
+                    {deptFilter !== ALL_VALUE ? ` (${deptFilter})` : ""}
                   </DialogTitle>
                 </DialogHeader>
                 <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
@@ -733,7 +717,7 @@ export default function DepartmentStudentsPage() {
                           {student.name}
                         </p>
                         <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                          {getRegNo(student)} · Y{student.year} {student.section}
+                          {getRegNo(student)} - Y{student.year} {student.section}
                         </p>
                       </div>
                       <div className="text-right shrink-0">
@@ -793,13 +777,13 @@ export default function DepartmentStudentsPage() {
               <CardDescription>
                 Avg. Easy / Medium / Hard solved per student
                 {chartGroupedByYear ? ", by year" : `, by section (Year ${yearFilter})`}
-                {effectiveClassFilter !== ALL_VALUE || linkFilter !== ALL_VALUE ? " (filtered)" : ""}
+                {effectiveClassFilter !== ALL_VALUE || deptFilter !== ALL_VALUE ? " (filtered)" : ""}
               </CardDescription>
             </CardHeader>
             <CardContent>
               {classPerformance.length === 0 ? (
                 <div className="flex h-64 items-center justify-center text-sm text-gray-500 dark:text-gray-400">
-                  No LeetCode progress recorded yet for this department.
+                  No LeetCode progress recorded yet.
                 </div>
               ) : (
                 <ResponsiveContainer width="100%" height={280}>
@@ -840,7 +824,7 @@ export default function DepartmentStudentsPage() {
               <CardTitle>All Department Students</CardTitle>
               <CardDescription>
                 {filteredStudents.length} of {students.length} students shown
-                {(solvedRank !== "all" || hardRank !== "all" || streakRank !== "all") && " · ranking applied"}
+                {(solvedRank !== "all" || hardRank !== "all" || streakRank !== "all") && " - sorted"}
               </CardDescription>
             </div>
             <div className="relative w-64">
@@ -864,6 +848,8 @@ export default function DepartmentStudentsPage() {
                   <TableHead>LeetCode</TableHead>
                   <TableHead>GitHub</TableHead>
                   <TableHead>Streak</TableHead>
+                  <TableHead>Easy Solved</TableHead>
+                  <TableHead>Medium Solved</TableHead>
                   <TableHead>Hard Solved</TableHead>
                   <TableHead>Total Solved</TableHead>
                   <TableHead className="text-right">Action</TableHead>
@@ -915,6 +901,8 @@ export default function DepartmentStudentsPage() {
                           {student.current_streak ?? 0}
                         </span>
                       </TableCell>
+                      <TableCell>{student.easy_count ?? 0}</TableCell>
+                      <TableCell>{student.medium_count ?? 0}</TableCell>
                       <TableCell>{student.hard_count ?? 0}</TableCell>
                       <TableCell>{student.total_solved ?? 0}</TableCell>
                       <TableCell className="text-right">
@@ -935,7 +923,7 @@ export default function DepartmentStudentsPage() {
                 })}
                 {filteredStudents.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center py-6 text-gray-500">
+                    <TableCell colSpan={11} className="text-center py-6 text-gray-500">
                       No students match your search/filters.
                     </TableCell>
                   </TableRow>

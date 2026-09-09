@@ -5,6 +5,13 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Search, Loader2, ExternalLink, Trophy, FileDown, FileSpreadsheet, Link2 } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
@@ -43,9 +50,15 @@ export type StudentWithSummary = StudentRow & {
   medium_count: number
   hard_count: number
   current_streak: number
+  total_solved: number
 }
 
-type SortKey = "easy_count" | "medium_count" | "hard_count" | "current_streak" | null
+// Sort-direction selects. These only reorder the visible list -- they
+// never hide anyone. Every student that passes search/LeetCode-linked
+// filters stays visible, just in a different order.
+type RankFilter = "all" | "top" | "least"
+
+const getStudentKey = (s: StudentWithSummary) => s.id || s.reg_no
 
 interface ClassDetailPanelProps {
   classInfo: Class
@@ -56,8 +69,14 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState("")
-  const [sortKey, setSortKey] = useState<SortKey>(null)
   const [leetcodeOnly, setLeetcodeOnly] = useState(false)
+
+  // Replaces the old single-select "Sort by Easy/Medium/Hard/Streak"
+  // toggle buttons. Each of these can be set independently, and -- unlike
+  // a plain toggle -- more than one can be active at once.
+  const [solvedRank, setSolvedRank] = useState<RankFilter>("all") // sort by total problems solved
+  const [hardRank, setHardRank] = useState<RankFilter>("all") // sort by hard problems solved
+  const [streakRank, setStreakRank] = useState<RankFilter>("all") // sort by streak
 
   useEffect(() => {
     let isMounted = true
@@ -88,12 +107,17 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
           ? row.student_summary[0] || null
           : row.student_summary || null
 
+        const easy = summary?.easy_count ?? 0
+        const medium = summary?.medium_count ?? 0
+        const hard = summary?.hard_count ?? 0
+
         return {
           ...row,
-          easy_count: summary?.easy_count ?? 0,
-          medium_count: summary?.medium_count ?? 0,
-          hard_count: summary?.hard_count ?? 0,
+          easy_count: easy,
+          medium_count: medium,
+          hard_count: hard,
           current_streak: summary?.current_streak ?? 0,
+          total_solved: easy + medium + hard,
         }
       })
 
@@ -112,7 +136,9 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
     [students]
   )
 
-  const visibleStudents = useMemo(() => {
+  // Search + LeetCode-linked filter only. This is the full visible set --
+  // sorting below never removes anyone from it.
+  const basePool = useMemo(() => {
     let list = students.filter(
       (s) =>
         s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -123,12 +149,44 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
       list = list.filter((s) => !!s.leetcode_username)
     }
 
-    if (sortKey) {
-      list = [...list].sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0))
+    return list
+  }, [students, searchTerm, leetcodeOnly])
+
+  // Sort the base pool by whichever ranking selects are active, without
+  // dropping any student. Each active key contributes a RANK POSITION
+  // (1 = best for that metric, given its own top/least direction), and a
+  // student's final order is by the AVERAGE of their ranks across every
+  // active key. That way two selected criteria blend together -- a
+  // student strong on both selected metrics rises above one who only
+  // dominates a single metric.
+  const visibleStudents = useMemo(() => {
+    const activeKeys: { mode: RankFilter; metric: (s: StudentWithSummary) => number }[] = [
+      { mode: solvedRank, metric: (s) => s.total_solved },
+      { mode: hardRank, metric: (s) => s.hard_count },
+      { mode: streakRank, metric: (s) => s.current_streak },
+    ].filter((k) => k.mode !== "all")
+
+    if (activeKeys.length === 0) return basePool
+
+    const buildRankMap = (metric: (s: StudentWithSummary) => number, mode: RankFilter) => {
+      const sorted = [...basePool].sort((a, b) =>
+        mode === "top" ? metric(b) - metric(a) : metric(a) - metric(b)
+      )
+      const map = new Map<string, number>()
+      sorted.forEach((s, idx) => map.set(getStudentKey(s), idx + 1))
+      return map
     }
 
-    return list
-  }, [students, searchTerm, leetcodeOnly, sortKey])
+    const rankMaps = activeKeys.map(({ metric, mode }) => buildRankMap(metric, mode))
+
+    const averageRank = (s: StudentWithSummary) => {
+      const key = getStudentKey(s)
+      const total = rankMaps.reduce((sum, map) => sum + (map.get(key) ?? Number.MAX_SAFE_INTEGER), 0)
+      return total / rankMaps.length
+    }
+
+    return [...basePool].sort((a, b) => averageRank(a) - averageRank(b))
+  }, [basePool, solvedRank, hardRank, streakRank])
 
   const className = classInfo.name || `${classInfo.department} Y${classInfo.year} ${classInfo.section}`
 
@@ -140,19 +198,15 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
     exportStudentsToExcel(visibleStudents, className.replace(/\s+/g, "_"))
   }
 
-  const filterButtons: { label: string; key: SortKey }[] = [
-    { label: "Easy", key: "easy_count" },
-    { label: "Medium", key: "medium_count" },
-    { label: "Hard", key: "hard_count" },
-    { label: "Streak", key: "current_streak" },
-  ]
-
   return (
     <Card>
       <CardHeader className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <CardTitle>{className}</CardTitle>
-          <CardDescription>{students.length} students loaded</CardDescription>
+          <CardDescription>
+            {students.length} students loaded
+            {(solvedRank !== "all" || hardRank !== "all" || streakRank !== "all") && " - sorted"}
+          </CardDescription>
         </div>
         <div className="flex gap-2">
           <Button
@@ -224,8 +278,8 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
             </div>
 
             {/* Filters + search */}
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div className="flex flex-wrap items-end gap-3">
                 <Button
                   variant={leetcodeOnly ? "default" : "outline"}
                   size="sm"
@@ -234,16 +288,52 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
                   <Link2 className="mr-1 h-3 w-3" />
                   LeetCode Linked
                 </Button>
-                {filterButtons.map((f) => (
-                  <Button
-                    key={f.label}
-                    variant={sortKey === f.key ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setSortKey((prev) => (prev === f.key ? null : f.key))}
-                  >
-                    Sort by {f.label}
-                  </Button>
-                ))}
+
+                <div className="space-y-1">
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">
+                    Problems solved
+                  </label>
+                  <Select value={solvedRank} onValueChange={(v) => setSolvedRank(v as RankFilter)}>
+                    <SelectTrigger className="h-9 w-[150px]">
+                      <SelectValue placeholder="No sort" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">No sort</SelectItem>
+                      <SelectItem value="top">Highest first</SelectItem>
+                      <SelectItem value="least">Lowest first</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">
+                    Hard problems solved
+                  </label>
+                  <Select value={hardRank} onValueChange={(v) => setHardRank(v as RankFilter)}>
+                    <SelectTrigger className="h-9 w-[150px]">
+                      <SelectValue placeholder="No sort" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">No sort</SelectItem>
+                      <SelectItem value="top">Highest first</SelectItem>
+                      <SelectItem value="least">Lowest first</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">Streak</label>
+                  <Select value={streakRank} onValueChange={(v) => setStreakRank(v as RankFilter)}>
+                    <SelectTrigger className="h-9 w-[150px]">
+                      <SelectValue placeholder="No sort" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">No sort</SelectItem>
+                      <SelectItem value="top">Highest first</SelectItem>
+                      <SelectItem value="least">Lowest first</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <div className="relative w-full sm:w-64">
@@ -269,6 +359,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
                   <TableHead className="text-center">Easy</TableHead>
                   <TableHead className="text-center">Medium</TableHead>
                   <TableHead className="text-center">Hard</TableHead>
+                  <TableHead className="text-center">Total Solved</TableHead>
                   <TableHead className="text-center">Streak</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
@@ -311,6 +402,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
                     <TableCell className="text-center">{student.easy_count}</TableCell>
                     <TableCell className="text-center">{student.medium_count}</TableCell>
                     <TableCell className="text-center">{student.hard_count}</TableCell>
+                    <TableCell className="text-center">{student.total_solved}</TableCell>
                     <TableCell className="text-center font-medium text-orange-500">
                       {student.current_streak}
                     </TableCell>
@@ -325,7 +417,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
                 ))}
                 {visibleStudents.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center py-6 text-gray-500">
+                    <TableCell colSpan={10} className="text-center py-6 text-gray-500">
                       No students match your search/filters.
                     </TableCell>
                   </TableRow>

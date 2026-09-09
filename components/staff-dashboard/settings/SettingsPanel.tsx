@@ -592,7 +592,7 @@ export default function SettingsPanel({ onStaffUpdate }: SettingsPanelProps) {
             </CardContent>
           </Card>
         </TabsContent>
-
+        
         <TabsContent value="security">
           <Card>
             <CardHeader>
