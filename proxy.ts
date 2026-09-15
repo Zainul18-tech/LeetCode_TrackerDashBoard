@@ -32,8 +32,25 @@ const HOD_ONLY_STAFF_SUBPATHS = ["/dashboard/staff/staff-detail", "/dashboard/st
 const ROLE_CACHE_MAX_AGE_SECONDS = 60;
 const ROLE_CACHE_COOKIE = "sb-staff-role";
 
-function homePathForRole(role: string | null | undefined) {
-  return isHodEquivalent(role) ? "/dashboard/staff" : "/dashboard/staff";
+// Anything matching this never needs Supabase, cookies, or DB work.
+// Checked before the client is created so these requests pay ~0ms.
+const STATIC_ASSET_RE =
+  /\.(?:png|jpg|jpeg|gif|webp|avif|svg|ico|css|js|mjs|map|woff2?|ttf|txt|xml|json)$/i;
+
+function isStaticAsset(pathname: string) {
+  return (
+    pathname.startsWith("/_next/") ||
+    pathname.startsWith("/static/") ||
+    pathname === "/favicon.ico" ||
+    STATIC_ASSET_RE.test(pathname)
+  );
+}
+
+function homePathForRole(_role: string | null | undefined) {
+  // Both role tiers currently land on the same home route; kept as a
+  // function (rather than a constant) so per-role home pages are a
+  // one-line change later.
+  return "/dashboard/staff";
 }
 
 // Paths a staff member with this role is allowed to be on without getting
@@ -56,6 +73,37 @@ type CachedRole = {
 };
 
 export async function proxy(request: NextRequest) {
+  const path = request.nextUrl.pathname;
+
+  // --- Requirement 2: ultra-fast bypass for static assets -----------------
+  // No Supabase client, no cookie parsing, no auth check — just pass through.
+  // (config.matcher below already excludes most of these; this is a second,
+  // even cheaper guard for anything that slips through, e.g. /public files
+  // referenced from within /dashboard.)
+  if (isStaticAsset(path)) {
+    return NextResponse.next();
+  }
+
+  const onAuthPage = path === "/login" || path === "/register";
+  const onDashboard = path.startsWith("/dashboard");
+
+  // --- Requirement 3: skip Supabase entirely on paths that don't need it --
+  // Only /dashboard/* and /login /register (per the matcher) ever reach
+  // this point, and both of those DO need an auth check, so there is no
+  // further "public path" branch to add here without changing the matcher.
+  // The guard is still made explicit so future public routes added to the
+  // matcher don't silently start paying for a Supabase round-trip.
+  if (!onDashboard && !onAuthPage) {
+    return NextResponse.next();
+  }
+
+  // --- Requirement 1: correct cookie sync ----------------------------------
+  // `response` must be reassigned INSIDE setAll so it carries the request
+  // object with the newly-set cookies already applied to it. Writing the
+  // cookies to `request.cookies` first (so subsequent Supabase calls in this
+  // same invocation see them) and then to the fresh `response` (so the
+  // browser receives them) is what stops the refresh token from being
+  // dropped between requests.
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -67,37 +115,32 @@ export async function proxy(request: NextRequest) {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet: CookieToSet[]) {
-          cookiesToSet.forEach(({ name, value }) =>
-            request.cookies.set(name, value)
-          );
+          cookiesToSet.forEach(({ name, value }) => {
+            request.cookies.set(name, value);
+          });
 
           response = NextResponse.next({ request });
 
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
-          );
+          cookiesToSet.forEach(({ name, value, options }) => {
+            response.cookies.set(name, value, options);
+          });
         },
       },
     }
   );
 
-  // getClaims() verifies the JWT locally (cached JWKS lookup) instead of
-  // calling the Supabase Auth server on every single request the way
-  // getUser() does. This is the single biggest cost in this file — swap
-  // it back to getUser() only if you're on an old project using symmetric
-  // (HS256) JWT signing keys, where getClaims() can't verify locally.
+  // getUser() (not getClaims()) is required here: it's the call that
+  // actually talks to the Supabase Auth server and rotates/refreshes the
+  // session, which is what triggers setAll() above and keeps the refresh
+  // token cookie in sync. getClaims() only verifies a JWT locally — it never
+  // refreshes, so an expiring/rotated refresh token cookie never gets
+  // rewritten and eventually goes stale, producing
+  // "Refresh Token Not Found". The cost is one Auth-server round trip, but
+  // it's now only paid on the /dashboard and /login /register paths that
+  // reach this line, not on every request.
   const {
-    data: claimsData,
-  } = await supabase.auth.getClaims();
-
-  const user = claimsData?.claims
-    ? { email: claimsData.claims.email as string | undefined }
-    : null;
-
-  const path = request.nextUrl.pathname;
-
-  const onAuthPage = path === "/login" || path === "/register";
-  const onDashboard = path.startsWith("/dashboard");
+    data: { user },
+  } = await supabase.auth.getUser();
 
   // Not logged in -> protect dashboard
   if (!user && onDashboard) {
@@ -177,5 +220,12 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/login", "/register"],
+  // Excludes _next static/image assets and common file extensions up front,
+  // so the vast majority of static requests never even invoke this function.
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|css|js)$).*)",
+    "/dashboard/:path*",
+    "/login",
+    "/register",
+  ],
 };
