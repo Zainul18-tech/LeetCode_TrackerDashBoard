@@ -6,7 +6,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { AlertTriangle, ArrowLeft, Download, Loader2, Mail, Search, Users } from "lucide-react"
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Building2,
+  Download,
+  Loader2,
+  Mail,
+  School,
+  Search,
+  Users,
+} from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 
 // Matches public.staff
@@ -14,7 +24,7 @@ type StaffRow = {
   id: string
   name: string
   email: string
-  role: "HOD" | "Teacher" | "Tutor" | "Class Advisor"
+  role: "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Dean" | "Staff"
   department: string
   year: number | null
   section: string | null
@@ -58,11 +68,13 @@ const statusStyles: Record<string, string> = {
 }
 const defaultStatusStyle = "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
 
-const roleStyles: Record<StaffRow["role"], string> = {
+const roleStyles: Record<string, string> = {
   HOD: "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
+  Dean: "bg-pink-100 text-pink-700 dark:bg-pink-900 dark:text-pink-300",
   Teacher: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
   Tutor: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
   "Class Advisor": "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
+  Staff: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
 }
 
 export default function StaffDetailsPage() {
@@ -74,7 +86,16 @@ export default function StaffDetailsPage() {
   const [error, setError] = useState<string | null>(null)
 
   const [searchTerm, setSearchTerm] = useState("")
+
+  // Drill-down state. HOD only ever uses `selectedClass` (they land
+  // straight on the class grid, scoped to their own department). Dean
+  // additionally drills through department -> year before reaching the
+  // same class grid / staff table.
+  const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null)
+  const [selectedYear, setSelectedYear] = useState<number | null>(null)
   const [selectedClass, setSelectedClass] = useState<ClassRow | null>(null)
+
+  const isDean = myStaff?.role === "Dean"
 
   useEffect(() => {
     async function loadData() {
@@ -92,7 +113,7 @@ export default function StaffDetailsPage() {
         return
       }
 
-      // 2. Resolve their staff profile — we only need the department here.
+      // 2. Resolve their staff profile.
       const { data: staffRow, error: staffError } = await supabase
         .from("staff")
         .select("*")
@@ -115,13 +136,22 @@ export default function StaffDetailsPage() {
 
       setMyStaff(staffRow)
 
-      // 3. Every class in this department.
-      const { data: classRows, error: classesError } = await supabase
+      const staffIsDean = staffRow.role === "Dean"
+
+      // 3. Classes -- HOD is scoped to their own department; Dean gets
+      //    every department and drills down through the UI instead.
+      let classesQuery = supabase
         .from("classes")
         .select("*")
-        .ilike("department", staffRow.department)
+        .order("department", { ascending: true })
         .order("year", { ascending: true })
         .order("section", { ascending: true })
+
+      if (!staffIsDean) {
+        classesQuery = classesQuery.ilike("department", staffRow.department)
+      }
+
+      const { data: classRows, error: classesError } = await classesQuery
 
       if (classesError) {
         setError(classesError.message)
@@ -131,16 +161,17 @@ export default function StaffDetailsPage() {
 
       setClasses(classRows || [])
 
-      // 4. Every staff member in this department. Matching to a class is
-      //    done client-side by department + year + section, since there's
-      //    no join table in this schema — a staff row's own year/section
-      //    columns ARE the class assignment.
-      const { data: staffRows, error: deptStaffError } = await supabase
-        .from("staff")
-        .select("*")
-        .ilike("department", staffRow.department)
-        .order("role", { ascending: true })
-        .order("name", { ascending: true })
+      // 4. Staff -- same scoping rule as classes. Matching a staff member
+      //    to a class is done client-side by department + year + section,
+      //    since there's no join table in this schema -- a staff row's own
+      //    year/section columns ARE the class assignment.
+      let staffQuery = supabase.from("staff").select("*").order("role", { ascending: true }).order("name", { ascending: true })
+
+      if (!staffIsDean) {
+        staffQuery = staffQuery.ilike("department", staffRow.department)
+      }
+
+      const { data: staffRows, error: deptStaffError } = await staffQuery
 
       if (deptStaffError) {
         setError(deptStaffError.message)
@@ -150,9 +181,9 @@ export default function StaffDetailsPage() {
 
       setDeptStaff(staffRows || [])
 
-      // 5. class_staff rows for every class in this department — the only
-      //    place `status` lives. Fetched separately since it's a join
-      //    table, not embedded on staff or classes directly.
+      // 5. class_staff rows for every relevant class -- the only place
+      //    `status` lives. Fetched separately since it's a join table,
+      //    not embedded on staff or classes directly.
       const classIds = (classRows || []).map((c) => c.id)
       if (classIds.length > 0) {
         const { data: classStaffRows, error: classStaffError } = await supabase
@@ -175,29 +206,24 @@ export default function StaffDetailsPage() {
     loadData()
   }, [])
 
-  const filteredClasses = classes.filter((c) => {
-    const label = `${c.class_name || ""} ${c.department} year ${c.year} ${c.section} ${c.batch || ""}`
-    return label.toLowerCase().includes(searchTerm.toLowerCase())
-  })
-
   // Actual teaching staff assigned to a class: Teacher / Tutor / Class
   // Advisor rows whose own year+section matches this class exactly.
-  // HOD rows are intentionally excluded here — HOD is not "assigned" to
-  // a specific class, they oversee the whole department. Status is
-  // merged in from class_staff, matched on BOTH class_id and staff_id so
-  // a person's status for one class doesn't leak onto another class.
+  // HOD/Dean rows are intentionally excluded here -- they oversee, they
+  // aren't "assigned" to a specific class. Status is merged in from
+  // class_staff, matched on BOTH class_id and staff_id so a person's
+  // status for one class doesn't leak onto another class.
   const getAssignedTeachers = (cls: ClassRow): StaffWithStatus[] =>
     deptStaff
-      .filter((s) => s.role !== "HOD" && s.year === cls.year && s.section === cls.section)
+      .filter((s) => s.role !== "HOD" && s.role !== "Dean" && s.year === cls.year && s.section === cls.section)
       .map((s) => {
         const match = classStaff.find((cs) => cs.class_id === cls.id && cs.staff_id === s.id)
         return { ...s, status: match?.status ?? null, status_updated_at: match?.status_updated_at ?? null }
       })
 
   // What actually gets displayed for a class: only the real
-  // teacher/tutor/advisor assignments. The HOD is NEVER listed here —
-  // if a class has no teacher assigned, the list is simply empty and
-  // the UI shows a "contact admin" notice instead.
+  // teacher/tutor/advisor assignments. HOD/Dean are NEVER listed here --
+  // if a class has no teacher assigned, the list is simply empty and the
+  // UI shows a "contact admin" notice instead.
   const getStaffForClass = (cls: ClassRow) => getAssignedTeachers(cls)
 
   const classStaffCounts = useMemo(() => {
@@ -206,11 +232,60 @@ export default function StaffDetailsPage() {
     return counts
   }, [classes, deptStaff, classStaff])
 
+  // ---- Dean drill-down levels ----
+
+  // Level 1: every distinct department, derived from the (unscoped)
+  // classes list.
+  const departments = useMemo(
+    () => Array.from(new Set(classes.map((c) => c.department))).filter(Boolean).sort(),
+    [classes]
+  )
+
+  const classesInSelectedDept = useMemo(
+    () => (selectedDepartment ? classes.filter((c) => c.department === selectedDepartment) : []),
+    [classes, selectedDepartment]
+  )
+
+  // Level 2: every distinct year within the selected department.
+  const yearsInSelectedDept = useMemo(
+    () => Array.from(new Set(classesInSelectedDept.map((c) => c.year))).sort((a, b) => a - b),
+    [classesInSelectedDept]
+  )
+
+  const classesInSelectedDeptYear = useMemo(
+    () => (selectedYear != null ? classesInSelectedDept.filter((c) => c.year === selectedYear) : []),
+    [classesInSelectedDept, selectedYear]
+  )
+
+  // Level 3 (Dean) / Level 1 (HOD): the class grid actually shown, with
+  // search applied. HOD searches across their whole (already scoped)
+  // department; Dean searches within the selected department + year.
+  const classesForGrid = isDean ? classesInSelectedDeptYear : classes
+
+  const filteredClasses = useMemo(
+    () =>
+      classesForGrid.filter((c) => {
+        const label = `${c.class_name || ""} ${c.department} year ${c.year} ${c.section} ${c.batch || ""}`
+        return label.toLowerCase().includes(searchTerm.toLowerCase())
+      }),
+    [classesForGrid, searchTerm]
+  )
+
+  // Per-department / per-year rollups, for the Dean's browse cards.
+  const staffCountForDept = (dept: string) => deptStaff.filter((s) => s.department === dept).length
+  const classCountForDept = (dept: string) => classes.filter((c) => c.department === dept).length
+
+  const classCountForYear = (dept: string, year: number) =>
+    classes.filter((c) => c.department === dept && c.year === year).length
+  const staffCountForYear = (dept: string, year: number) =>
+    classes
+      .filter((c) => c.department === dept && c.year === year)
+      .reduce((sum, c) => sum + (classStaffCounts.get(c.id) ?? 0), 0)
+
   const selectedClassHasTeacher = selectedClass ? getAssignedTeachers(selectedClass).length > 0 : false
   const selectedClassStaff = selectedClass ? getStaffForClass(selectedClass) : []
 
-  const classLabel = (c: ClassRow) =>
-    c.class_name || `Year ${c.year} - Section ${c.section}`
+  const classLabel = (c: ClassRow) => c.class_name || `Year ${c.year} - Section ${c.section}`
 
   const exportStaffToCsv = () => {
     if (!selectedClass) return
@@ -247,6 +322,15 @@ export default function StaffDetailsPage() {
     URL.revokeObjectURL(url)
   }
 
+  // Reset the whole drill-down back to the top (Departments for Dean,
+  // Classes for everyone else).
+  const resetDrilldown = () => {
+    setSelectedDepartment(null)
+    setSelectedYear(null)
+    setSelectedClass(null)
+    setSearchTerm("")
+  }
+
   if (loading) {
     return (
       <DashboardLayout userRole={myStaff?.role || "Staff"} userName={myStaff?.name || "Loading..."}>
@@ -257,23 +341,51 @@ export default function StaffDetailsPage() {
     )
   }
 
+  // ---- Header text, based on how deep we are in the drill-down ----
+  let headerSubtitle = ""
+  if (selectedClass) {
+    headerSubtitle = `Staff assigned to ${classLabel(selectedClass)}`
+  } else if (isDean && selectedYear != null) {
+    headerSubtitle = `Classes in ${selectedDepartment} - Year ${selectedYear}`
+  } else if (isDean && selectedDepartment) {
+    headerSubtitle = `Years in ${selectedDepartment}`
+  } else if (isDean) {
+    headerSubtitle = "Select a department"
+  } else {
+    headerSubtitle = `Classes in ${myStaff?.department || "your department"}`
+  }
+
+  // ---- Which "back" button to show, based on current depth ----
+  const handleBack = () => {
+    if (selectedClass) {
+      setSelectedClass(null)
+      return
+    }
+    if (isDean && selectedYear != null) {
+      setSelectedYear(null)
+      return
+    }
+    if (isDean && selectedDepartment) {
+      setSelectedDepartment(null)
+      return
+    }
+  }
+
+  const showBackButton = selectedClass != null || (isDean && (selectedYear != null || selectedDepartment != null))
+
   return (
     <DashboardLayout userRole={myStaff?.role || "Staff"} userName={myStaff?.name || "Staff"}>
       <div className="flex flex-col space-y-8 pb-12">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Staff Details</h1>
-            <p className="text-gray-500 dark:text-gray-400">
-              {selectedClass
-                ? `Staff assigned to ${classLabel(selectedClass)}`
-                : `Classes in ${myStaff?.department || "your department"}`}
-            </p>
+            <p className="text-gray-500 dark:text-gray-400">{headerSubtitle}</p>
           </div>
 
-          {selectedClass && (
-            <Button variant="outline" size="sm" className="gap-2 w-fit" onClick={() => setSelectedClass(null)}>
+          {showBackButton && (
+            <Button variant="outline" size="sm" className="gap-2 w-fit" onClick={handleBack}>
               <ArrowLeft className="h-4 w-4" />
-              Back to classes
+              Back
             </Button>
           )}
         </div>
@@ -286,65 +398,142 @@ export default function StaffDetailsPage() {
           </Card>
         )}
 
-        {!selectedClass ? (
-          <>
-            {/* Search */}
-            <div className="relative w-full md:w-72">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-500 dark:text-gray-400" />
-              <Input
-                type="search"
-                placeholder="Search classes..."
-                className="pl-9 h-9"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
+        {/* ---------------- Dean, level 1: Departments ---------------- */}
+        {isDean && !selectedDepartment && !selectedClass && (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {departments.map((dept) => (
+              <Card
+                key={dept}
+                className="cursor-pointer transition hover:border-blue-400 hover:shadow-md dark:hover:border-blue-600"
+                onClick={() => setSelectedDepartment(dept)}
+              >
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Building2 className="h-4 w-4 text-blue-600 dark:text-blue-500" />
+                    {dept}
+                  </CardTitle>
+                  <CardDescription>{classCountForDept(dept)} classes</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300">
+                    <Users className="h-3.5 w-3.5" />
+                    {staffCountForDept(dept)} staff
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
 
-            {/* Class grid */}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {filteredClasses.map((c) => {
-                const teacherCount = classStaffCounts.get(c.id) ?? 0
-                const hasTeacher = teacherCount > 0
-                return (
-                  <Card
-                    key={c.id}
-                    className="cursor-pointer transition hover:border-blue-400 hover:shadow-md dark:hover:border-blue-600"
-                    onClick={() => setSelectedClass(c)}
-                  >
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-base">{classLabel(c)}</CardTitle>
-                      <CardDescription>
-                        {c.department} · Year {c.year} · Section {c.section}
-                        {c.batch ? ` · Batch ${c.batch}` : ""}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      {hasTeacher ? (
-                        <div className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300">
-                          <Users className="h-3.5 w-3.5" />
-                          {teacherCount} staff assigned
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-400">
-                          <AlertTriangle className="h-3.5 w-3.5" />
-                          No teacher assigned
-                        </div>
-                      )}
+            {departments.length === 0 && (
+              <Card className="sm:col-span-2 lg:col-span-3">
+                <CardContent className="py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+                  No departments found.
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        )}
+
+        {/* ---------------- Dean, level 2: Years within a department --- */}
+        {isDean && selectedDepartment && selectedYear == null && !selectedClass && (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {yearsInSelectedDept.map((year) => (
+              <Card
+                key={year}
+                className="cursor-pointer transition hover:border-blue-400 hover:shadow-md dark:hover:border-blue-600"
+                onClick={() => setSelectedYear(year)}
+              >
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <School className="h-4 w-4 text-blue-600 dark:text-blue-500" />
+                    Year {year}
+                  </CardTitle>
+                  <CardDescription>{classCountForYear(selectedDepartment, year)} classes</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300">
+                    <Users className="h-3.5 w-3.5" />
+                    {staffCountForYear(selectedDepartment, year)} staff assigned
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+
+            {yearsInSelectedDept.length === 0 && (
+              <Card className="sm:col-span-2 lg:col-span-3">
+                <CardContent className="py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+                  No years found for {selectedDepartment}.
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        )}
+
+        {/* ---------------- Class grid ----------------
+            Dean reaches this after picking department + year.
+            Everyone else (HOD) lands here directly, scoped to their own
+            department. */}
+        {((isDean && selectedDepartment && selectedYear != null) || (!isDean && !selectedClass)) &&
+          !selectedClass && (
+            <>
+              {/* Search */}
+              <div className="relative w-full md:w-72">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-500 dark:text-gray-400" />
+                <Input
+                  type="search"
+                  placeholder="Search classes..."
+                  className="pl-9 h-9"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {filteredClasses.map((c) => {
+                  const teacherCount = classStaffCounts.get(c.id) ?? 0
+                  const hasTeacher = teacherCount > 0
+                  return (
+                    <Card
+                      key={c.id}
+                      className="cursor-pointer transition hover:border-blue-400 hover:shadow-md dark:hover:border-blue-600"
+                      onClick={() => setSelectedClass(c)}
+                    >
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">{classLabel(c)}</CardTitle>
+                        <CardDescription>
+                          {c.department} · Year {c.year} · Section {c.section}
+                          {c.batch ? ` · Batch ${c.batch}` : ""}
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {hasTeacher ? (
+                          <div className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300">
+                            <Users className="h-3.5 w-3.5" />
+                            {teacherCount} staff assigned
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-400">
+                            <AlertTriangle className="h-3.5 w-3.5" />
+                            No teacher assigned
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )
+                })}
+
+                {filteredClasses.length === 0 && (
+                  <Card className="sm:col-span-2 lg:col-span-3">
+                    <CardContent className="py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+                      No classes match your search.
                     </CardContent>
                   </Card>
-                )
-              })}
+                )}
+              </div>
+            </>
+          )}
 
-              {filteredClasses.length === 0 && (
-                <Card className="sm:col-span-2 lg:col-span-3">
-                  <CardContent className="py-6 text-center text-sm text-gray-500 dark:text-gray-400">
-                    No classes match your search.
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          </>
-        ) : (
+        {/* ---------------- Staff table for the selected class ---------------- */}
+        {selectedClass && (
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
@@ -395,12 +584,16 @@ export default function StaffDetailsPage() {
                         </a>
                       </TableCell>
                       <TableCell>
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${roleStyles[s.role]}`}>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                            roleStyles[s.role] || defaultStatusStyle
+                          }`}
+                        >
                           {s.role}
                         </span>
                       </TableCell>
                       <TableCell className="text-sm text-gray-500 dark:text-gray-400">
-                        {s.role === "HOD"
+                        {s.role === "HOD" || s.role === "Dean"
                           ? "Whole department (fallback contact)"
                           : `Year ${s.year} · Section ${s.section}`}
                       </TableCell>

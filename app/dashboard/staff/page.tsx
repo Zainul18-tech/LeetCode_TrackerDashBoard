@@ -39,7 +39,7 @@ type Staff = {
   id: string
   name: string
   email: string
-  role: "HOD" | "Teacher" | "Tutor" | "Class Advisor"
+  role: "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Dean"
   department: string
   year: number | null
   section: string | null
@@ -91,8 +91,8 @@ const getRegNoFromStudent = (s: Student) => s.reg_no || s.register_number || ""
 
 // A task is "in scope" if it targets any class currently in `scopeClasses`
 // — which is already role-scoped by the time this runs: every class in the
-// department for an HOD, or just the classes this staff member is assigned
-// to otherwise.
+// department for an HOD, every class in the institution for a Dean, or
+// just the classes this staff member is assigned to otherwise.
 function isTaskInScope(task: TaskRow, scopeClasses: Class[]): boolean {
   if (task.applies_to_all_classes) {
     if (!task.target_years || task.target_years.length === 0) return true
@@ -112,8 +112,8 @@ export default function StaffDashboard() {
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   // Dynamic chart data, aggregated from student_summary for whatever
-  // students are currently in scope (department-wide for HOD, assigned
-  // classes for everyone else).
+  // students are currently in scope (institution-wide for Dean,
+  // department-wide for HOD, assigned classes for everyone else).
   const [difficultyTotals, setDifficultyTotals] = useState<DifficultyTotals>({
     easy: 0,
     medium: 0,
@@ -122,7 +122,8 @@ export default function StaffDashboard() {
   const [chartLoading, setChartLoading] = useState(true)
 
   // Task / activity counts, scoped the same way as everything else on this
-  // page: whole department for HOD, assigned class(es) for everyone else.
+  // page: whole institution for Dean, whole department for HOD, assigned
+  // class(es) for everyone else.
   const [taskCount, setTaskCount] = useState(0)
   const [activityCount, setActivityCount] = useState(0)
   const [statsLoading, setStatsLoading] = useState(true)
@@ -166,6 +167,8 @@ export default function StaffDashboard() {
 
       setStaff(staffRow)
 
+      const isDean = staffRow.role === "Dean"
+
       let classIds: string[] = []
       let classResults: Class[] = []
 
@@ -194,6 +197,25 @@ export default function StaffDashboard() {
           setLoading(false)
           return
         }
+      } else if (isDean) {
+        // Dean sees every class across every department in the institution
+        const { data: allClasses, error: classesError } = await supabase
+          .from("classes")
+          .select("*")
+          .order("department", { ascending: true })
+          .order("year", { ascending: true })
+          .order("section", { ascending: true })
+
+        if (classesError) {
+          setError(classesError.message)
+          setLoading(false)
+          return
+        }
+
+        classResults = allClasses || []
+        classIds = classResults.map((c) => c.id)
+        // Note: unlike HOD, an empty class list isn't treated as a fatal
+        // error for a Dean — students are still fetched directly below.
       } else {
         // Teacher / Tutor / Class Advisor: only classes they're assigned to via class_staff
         const { data: assignments, error: assignError } = await supabase
@@ -223,12 +245,15 @@ export default function StaffDashboard() {
 
       setClasses(classResults)
 
-      // 3. Students only from the resolved class(es) — never all students
-      const { data: studentsResult, error: studentsError } = await supabase
-        .from("students")
-        .select("*")
-        .in("class_id", classIds)
-        .order("name", { ascending: true })
+      // 3. Students in scope. A Dean's scope is the entire `students`
+      //    table — no class_id filter — so every student in the database
+      //    is pulled regardless of which class or department they belong to.
+      let studentsQuery = supabase.from("students").select("*").order("name", { ascending: true })
+      if (!isDean) {
+        studentsQuery = studentsQuery.in("class_id", classIds)
+      }
+
+      const { data: studentsResult, error: studentsError } = await studentsQuery
 
       if (studentsError) {
         setError(studentsError.message)
@@ -309,13 +334,18 @@ export default function StaffDashboard() {
       setStudents(mergedStudents)
       setLoading(false)
 
-      // 5. Tasks + activity in scope. "In scope" = department-wide for
+      // 5. Tasks + activity in scope.
+      //    "In scope" = entire institution for Dean, department-wide for
       //    HOD, or targeting one of classResults for everyone else.
       setStatsLoading(true)
-      const { data: taskRows, error: taskError } = await supabase
+      let taskQuery = supabase
         .from("tasks")
         .select("id, department, target_years, applies_to_all_classes, task_classes(class_id)")
-        .ilike("department", staffRow.department)
+      if (!isDean) {
+        taskQuery = taskQuery.ilike("department", staffRow.department)
+      }
+
+      const { data: taskRows, error: taskError } = await taskQuery
 
       if (taskError) {
         setTaskCount(0)
@@ -328,7 +358,9 @@ export default function StaffDashboard() {
 
       // "Activity" = rows from public.activities for the class(es) in
       // scope — real activities (events, drives, sessions, etc.) that
-      // staff have logged for their class, not task Q&A.
+      // staff have logged for their class, not task Q&A. For a Dean,
+      // classIds already covers every class in the institution, so this
+      // naturally becomes an institution-wide count with no extra branch.
       if (classIds.length === 0) {
         setActivityCount(0)
       } else {
@@ -372,7 +404,9 @@ export default function StaffDashboard() {
 
   // Label shown in the header / KPI card
   const managingLabel =
-    staff?.role === "HOD"
+    staff?.role === "Dean"
+      ? `All Departments — All Students (${classes.length} classes)`
+      : staff?.role === "HOD"
       ? `${staff.department} — All Sections (${classes.length} classes)`
       : classes.length === 1
       ? classes[0]?.name ||
@@ -382,7 +416,9 @@ export default function StaffDashboard() {
       : "Your Class"
 
   const dashboardTitle =
-    staff?.role === "HOD"
+    staff?.role === "Dean"
+      ? "Dean Dashboard"
+      : staff?.role === "HOD"
       ? "HOD Dashboard"
       : staff?.role === "Class Advisor"
       ? "Class Advisor Dashboard"
@@ -390,7 +426,8 @@ export default function StaffDashboard() {
       ? "Teacher Dashboard"
       : "Tutor Dashboard"
 
-  const chartScopeLabel = staff?.role === "HOD" ? "Department-wide" : "Your assigned students"
+  const chartScopeLabel =
+    staff?.role === "Dean" ? "Institution-wide" : staff?.role === "HOD" ? "Department-wide" : "Your assigned students"
 
   const difficultyChartData = [
     { name: "Easy", solved: difficultyTotals.easy, fill: "#22c55e" },
@@ -416,7 +453,12 @@ export default function StaffDashboard() {
 
   const kpis = [
     {
-      title: staff?.role === "HOD" ? "Total Students (Dept)" : "Assigned Students",
+      title:
+        staff?.role === "Dean"
+          ? "Total Students (All)"
+          : staff?.role === "HOD"
+          ? "Total Students (Dept)"
+          : "Assigned Students",
       value: students.length.toString(),
       icon: Users,
       desc: managingLabel,
@@ -437,13 +479,23 @@ export default function StaffDashboard() {
       title: "Tasks",
       value: statsLoading ? "…" : taskCount.toString(),
       icon: ClipboardList,
-      desc: staff?.role === "HOD" ? "Across department" : "Assigned to your class(es)",
+      desc:
+        staff?.role === "Dean"
+          ? "Across all departments"
+          : staff?.role === "HOD"
+          ? "Across department"
+          : "Assigned to your class(es)",
     },
     {
       title: "Activity",
       value: statsLoading ? "…" : activityCount.toString(),
       icon: ActivityIcon,
-      desc: staff?.role === "HOD" ? "Logged across department" : "Logged for your class(es)",
+      desc:
+        staff?.role === "Dean"
+          ? "Logged across all departments"
+          : staff?.role === "HOD"
+          ? "Logged across department"
+          : "Logged for your class(es)",
     },
   ]
 
@@ -548,21 +600,43 @@ export default function StaffDashboard() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {topStudents.map((student, idx) => (
-                  <div key={student.id || getRegNo(student)} className="flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-100 text-blue-700 font-bold text-xs dark:bg-blue-900 dark:text-blue-300">
-                      #{idx + 1}
+                {topStudents.map((student, idx) => {
+                  const regNo = getRegNo(student)
+                  const rowContent = (
+                    <>
+                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-100 text-blue-700 font-bold text-xs dark:bg-blue-900 dark:text-blue-300">
+                        #{idx + 1}
+                      </div>
+                      <div className="flex-1 overflow-hidden">
+                        <p className="text-sm font-medium leading-none truncate text-gray-900 dark:text-gray-100">{student.name}</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{regNo}</p>
+                        {(staff?.role === "HOD" || staff?.role === "Dean") && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                            {student.department} / Y{student.year} / {student.section}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 font-medium text-orange-500">
+                        <Trophy className="h-3 w-3" />
+                        <span>{student.current_streak || 0}</span>
+                      </div>
+                    </>
+                  )
+
+                  return regNo ? (
+                    <Link
+                      key={student.id || regNo}
+                      href={`/dashboard/student/${regNo}`}
+                      className="flex items-center gap-3 rounded-md -mx-2 px-2 py-1 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
+                    >
+                      {rowContent}
+                    </Link>
+                  ) : (
+                    <div key={student.id || regNo} className="flex items-center gap-3 -mx-2 px-2 py-1">
+                      {rowContent}
                     </div>
-                    <div className="flex-1 overflow-hidden">
-                      <p className="text-sm font-medium leading-none truncate text-gray-900 dark:text-gray-100">{student.name}</p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{getRegNo(student)}</p>
-                    </div>
-                    <div className="flex items-center gap-1 font-medium text-orange-500">
-                      <Trophy className="h-3 w-3" />
-                      <span>{student.current_streak || 0}</span>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
                 {topStudents.length === 0 && (
                   <p className="text-sm text-gray-500 text-center py-4">No students available</p>
                 )}
@@ -575,9 +649,19 @@ export default function StaffDashboard() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>{staff?.role === "HOD" ? "All Department Students" : "Assigned Students"}</CardTitle>
+              <CardTitle>
+                {staff?.role === "Dean"
+                  ? "All Students"
+                  : staff?.role === "HOD"
+                  ? "All Department Students"
+                  : "Assigned Students"}
+              </CardTitle>
               <CardDescription>
-                {staff?.role === "HOD" ? "View and manage across all sections" : "Manage and review your class"}
+                {staff?.role === "Dean"
+                  ? "View and manage across the entire institution"
+                  : staff?.role === "HOD"
+                  ? "View and manage across all sections"
+                  : "Manage and review your class"}
               </CardDescription>
             </div>
             <div className="relative w-64">

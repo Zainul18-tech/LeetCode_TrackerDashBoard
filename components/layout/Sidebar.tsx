@@ -12,6 +12,7 @@ import {
   LogOut,
   CodeSquare,
   School,
+  Building2,
   ChevronDown,
   ChevronRight,
   ListTodo,
@@ -23,7 +24,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import SettingsPanel from "@/components/staff-dashboard/settings/SettingsPanel"
 
 interface SidebarProps {
-  role?: "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Staff"
+  role?: "HOD" | "Dean" | "Teacher" | "Tutor" | "Class Advisor" | "Staff"
   onLogout: () => void
   selectedClassId: string | null
   onSelectClass: (cls: Class | null) => void
@@ -31,25 +32,31 @@ interface SidebarProps {
 
 export default function Sidebar({ role = "HOD", onLogout, selectedClassId, onSelectClass }: SidebarProps) {
   const pathname = usePathname()
+  const isDean = role === "Dean"
+
   const { classes, loading: classesLoading } = useStaffClasses()
 
   const [isClassesOpen, setIsClassesOpen] = useState(!!selectedClassId)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
+  // HOD and Dean both get the full admin nav (Dashboard, All Students, Staff)
   const topLinks =
-    role === "HOD"
+    role === "HOD" || role === "Dean"
       ? [
-          { title: "Dashboard", href: "/dashboard/hod", icon: LayoutDashboard },
+          { title: "Dashboard", href: role === "Dean" ? "/dashboard/dean" : "/dashboard/hod", icon: LayoutDashboard },
           { title: "All Students", href: "/dashboard/staff/students", icon: Users },
           { title: "Staff", href: "/dashboard/staff/staff-detail", icon: UserCog },
         ]
       : [{ title: "Dashboard", href: "/dashboard/staff", icon: LayoutDashboard }]
 
-  // Same for every role — not gated by HOD vs Teacher/Tutor/Class Advisor.
+  // Same for every role except Dean, who has no Tasks link.
   const commonLinks = [
-    { title: "Tasks", href: "/dashboard/staff/task", icon: ListTodo },
+    ...(isDean ? [] : [{ title: "Tasks", href: "/dashboard/staff/task", icon: ListTodo }]),
     { title: "Activity", href: "/dashboard/staff/activity", icon: Activity },
   ]
+
+  // Dean has a single dedicated Department page instead of an expandable list.
+  const departmentLink = { title: "Department", href: "/dashboard/staff/department", icon: Building2 }
 
   const handleDashboardClick = () => {
     // Clicking a real nav link should drop back out of the class view
@@ -101,59 +108,66 @@ export default function Sidebar({ role = "HOD", onLogout, selectedClassId, onSel
           {/* Visible to every role, unlike topLinks above */}
           {commonLinks.map(renderLink)}
 
-          {/* Classes — expandable list. Clicking a class swaps the main content
-              area in place via onSelectClass; it does NOT navigate. */}
-          <div>
-            <button
-              onClick={() => setIsClassesOpen((v) => !v)}
-              className={cn(
-                "flex w-full items-center justify-between rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                selectedClassId
-                  ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-                  : "text-gray-700 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-50"
-              )}
-            >
-              <span className="flex items-center gap-3">
-                <School
-                  className={cn(
-                    "h-4 w-4",
-                    selectedClassId ? "text-blue-700 dark:text-blue-400" : "text-gray-400 dark:text-gray-500"
-                  )}
-                />
-                Classes
-              </span>
-              {isClassesOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-            </button>
-
-            {isClassesOpen && (
-              <div className="mt-1 space-y-1 pl-9">
-                {classesLoading && <p className="px-2 py-1 text-xs text-gray-400">Loading...</p>}
-
-                {!classesLoading && classes.length === 0 && (
-                  <p className="px-2 py-1 text-xs text-gray-400">No classes</p>
+          {isDean ? (
+            /* Dean: plain nav link to the dedicated Department page — no
+               expandable list, no in-place selection. */
+            renderLink(departmentLink)
+          ) : (
+            /* Everyone else: Classes — expandable list. Clicking a class
+               swaps the main content area in place via onSelectClass; it
+               does NOT navigate. */
+            <div>
+              <button
+                onClick={() => setIsClassesOpen((v) => !v)}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  selectedClassId
+                    ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                    : "text-gray-700 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-50"
                 )}
+              >
+                <span className="flex items-center gap-3">
+                  <School
+                    className={cn(
+                      "h-4 w-4",
+                      selectedClassId ? "text-blue-700 dark:text-blue-400" : "text-gray-400 dark:text-gray-500"
+                    )}
+                  />
+                  Classes
+                </span>
+                {isClassesOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </button>
 
-                {classes.map((cls) => {
-                  const isActive = selectedClassId === cls.id
-                  const label = cls.name || `Y${cls.year} ${cls.section}`
-                  return (
-                    <button
-                      key={cls.id}
-                      onClick={() => onSelectClass(cls)}
-                      className={cn(
-                        "block w-full truncate rounded-md px-2 py-1.5 text-left text-xs font-medium transition-colors",
-                        isActive
-                          ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-                          : "text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-50"
-                      )}
-                    >
-                      {label}
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
+              {isClassesOpen && (
+                <div className="mt-1 space-y-1 pl-9">
+                  {classesLoading && <p className="px-2 py-1 text-xs text-gray-400">Loading...</p>}
+
+                  {!classesLoading && classes.length === 0 && (
+                    <p className="px-2 py-1 text-xs text-gray-400">No classes</p>
+                  )}
+
+                  {classes.map((cls) => {
+                    const isActive = selectedClassId === cls.id
+                    const label = cls.name || `Y${cls.year} ${cls.section}`
+                    return (
+                      <button
+                        key={cls.id}
+                        onClick={() => onSelectClass(cls)}
+                        className={cn(
+                          "block w-full truncate rounded-md px-2 py-1.5 text-left text-xs font-medium transition-colors",
+                          isActive
+                            ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                            : "text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-50"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Settings — opens the SettingsPanel in a Dialog instead of
               navigating to a dedicated /dashboard/settings route. */}

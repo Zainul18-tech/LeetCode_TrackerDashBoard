@@ -10,7 +10,7 @@ import { Class } from "@/types"
 
 interface DashboardLayoutProps {
   children: React.ReactNode
-  userRole?: "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Staff"
+  userRole?: "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Staff"|"Dean"
   userName?: string
 }
 

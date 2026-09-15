@@ -9,12 +9,21 @@ type CookieToSet = {
   options: CookieOptions;
 };
 
+// Roles that get full HOD-equivalent access (sidebar links, HOD-only
+// sub-routes, etc). Add any future "admin-tier" roles here.
+const HOD_EQUIVALENT_ROLES = ["HOD", "Dean"];
+
+function isHodEquivalent(role: string | null | undefined) {
+  return !!role && HOD_EQUIVALENT_ROLES.includes(role);
+}
+
 // Routes reachable by ANY logged-in staff member regardless of role/home page
-// (e.g. clicking "View Profile" from either the HOD or staff dashboard).
+// (e.g. clicking "View Profile" from either the HOD/Dean or staff dashboard).
 const SHARED_STAFF_PATHS = ["/dashboard/student", "/dashboard/settings", "/dashboard/classes"];
 
-// Sub-routes under /dashboard/staff that are HOD-only. Even though a plain
-// staff member's home prefix is "/dashboard/staff", these must stay blocked.
+// Sub-routes under /dashboard/staff that are HOD/Dean-only. Even though a
+// plain staff member's home prefix is "/dashboard/staff", these must stay
+// blocked for anyone who isn't HOD-equivalent.
 const HOD_ONLY_STAFF_SUBPATHS = ["/dashboard/staff/staff-detail", "/dashboard/staff/students"];
 
 // How long we trust a cached role before re-checking the staff table.
@@ -24,7 +33,7 @@ const ROLE_CACHE_MAX_AGE_SECONDS = 60;
 const ROLE_CACHE_COOKIE = "sb-staff-role";
 
 function homePathForRole(role: string | null | undefined) {
-  return role === "HOD" ? "/dashboard/staff" : "/dashboard/staff";
+  return isHodEquivalent(role) ? "/dashboard/staff" : "/dashboard/staff";
 }
 
 // Paths a staff member with this role is allowed to be on without getting
@@ -32,8 +41,8 @@ function homePathForRole(role: string | null | undefined) {
 function allowedPrefixesForRole(role: string | null | undefined) {
   const home = homePathForRole(role);
 
-  if (role === "HOD") {
-    // Matches the HOD sidebar links: Dashboard, All Students, Staff
+  if (isHodEquivalent(role)) {
+    // Matches the HOD/Dean sidebar links: Dashboard, All Students, Staff
     return [home, "/dashboard/students", "/dashboard/staff", ...SHARED_STAFF_PATHS];
   }
 
@@ -143,7 +152,7 @@ export async function proxy(request: NextRequest) {
       );
     }
 
-    // User is in staff -> home route depends on role (HOD vs everyone else)
+    // User is in staff -> home route depends on role (HOD/Dean vs everyone else)
     const home = homePathForRole(role);
     const allowedPrefixes = allowedPrefixesForRole(role);
 
@@ -153,10 +162,11 @@ export async function proxy(request: NextRequest) {
 
     const isAllowed = allowedPrefixes.some((prefix) => path.startsWith(prefix));
 
-    // Block non-HOD staff from HOD-only sub-routes, even though they fall
-    // under the "/dashboard/staff" prefix that staff are otherwise allowed on.
+    // Block non-HOD/Dean staff from HOD/Dean-only sub-routes, even though
+    // they fall under the "/dashboard/staff" prefix that staff are
+    // otherwise allowed on.
     const isHodOnlySubpath = HOD_ONLY_STAFF_SUBPATHS.some((prefix) => path.startsWith(prefix));
-    const isBlockedForRole = role !== "HOD" && isHodOnlySubpath;
+    const isBlockedForRole = !isHodEquivalent(role) && isHodOnlySubpath;
 
     if (onDashboard && (!isAllowed || isBlockedForRole)) {
       return NextResponse.redirect(new URL(home, request.url));

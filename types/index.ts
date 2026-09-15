@@ -1,4 +1,4 @@
-export type Role = "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Staff";
+export type Role = "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Dean" | "Staff";
 export type Status = "Active" | "Inactive";
 
 export interface Staff {

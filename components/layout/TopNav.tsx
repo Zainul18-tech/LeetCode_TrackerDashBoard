@@ -1,7 +1,6 @@
 "use client"
 
-import { Bell, Menu, Search, Sun, Moon, RefreshCw, CheckCircle2, AlertCircle } from "lucide-react"
-import { Input } from "@/components/ui/input"
+import { Bell, Menu, Sun, Moon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useEffect, useState } from "react"
 
@@ -15,8 +14,6 @@ const THEME_STORAGE_KEY = "theme"
 
 export default function TopNav({ onMenuClick, userRole, userName }: TopNavProps) {
   const [isDark, setIsDark] = useState(false)
-  const [isSyncing, setIsSyncing] = useState(false)
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'success' | 'error'>('idle')
 
   // On mount: prefer whatever the user explicitly chose before (localStorage).
   // Only fall back to OS preference if they've never toggled it themselves.
@@ -36,28 +33,6 @@ export default function TopNav({ onMenuClick, userRole, userName }: TopNavProps)
     setIsDark(next)
   }
 
-  const handleSync = async () => {
-    if (isSyncing) return
-    setIsSyncing(true)
-    setSyncStatus('idle')
-    
-    try {
-      const response = await fetch('/api/sync', { method: 'POST' })
-      if (response.ok) {
-        setSyncStatus('success')
-        setTimeout(() => setSyncStatus('idle'), 3000)
-      } else {
-        setSyncStatus('error')
-        setTimeout(() => setSyncStatus('idle'), 3000)
-      }
-    } catch (error) {
-      setSyncStatus('error')
-      setTimeout(() => setSyncStatus('idle'), 3000)
-    } finally {
-      setIsSyncing(false)
-    }
-  }
-
   return (
     <header className="sticky top-0 z-30 flex h-16 w-full shrink-0 items-center justify-between border-b border-gray-200 bg-white/80 px-4 backdrop-blur-md dark:border-gray-800 dark:bg-gray-950/80 sm:px-6 lg:px-8">
       <div className="flex items-center gap-4">
@@ -68,22 +43,6 @@ export default function TopNav({ onMenuClick, userRole, userName }: TopNavProps)
       </div>
       
       <div className="flex items-center gap-3 sm:gap-4">
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={handleSync}
-          disabled={isSyncing}
-          className={`hidden sm:flex transition-all ${syncStatus === 'success' ? 'border-green-500 text-green-600 dark:text-green-500' : syncStatus === 'error' ? 'border-red-500 text-red-600 dark:text-red-500' : ''}`}
-        >
-          {syncStatus === 'success' ? (
-            <><CheckCircle2 className="mr-2 h-4 w-4" /> Synced</>
-          ) : syncStatus === 'error' ? (
-            <><AlertCircle className="mr-2 h-4 w-4" /> Failed</>
-          ) : (
-            <><RefreshCw className={`mr-2 h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} /> {isSyncing ? 'Syncing...' : 'Sync Data'}</>
-          )}
-        </Button>
-
         <Button variant="ghost" size="icon" onClick={toggleTheme}>
           {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
         </Button>

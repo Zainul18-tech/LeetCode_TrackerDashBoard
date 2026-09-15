@@ -78,6 +78,13 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
   const [hardRank, setHardRank] = useState<RankFilter>("all") // sort by hard problems solved
   const [streakRank, setStreakRank] = useState<RankFilter>("all") // sort by streak
 
+  // classId is derived once per render and used as the sole effect
+  // dependency below. Kept as a plain string (never an array/object
+  // literal) so the dependency list is always length-1 and order-stable
+  // across renders -- this is what keeps React's hook-order check happy
+  // even across Fast Refresh / remounts.
+  const classId = classInfo.id
+
   useEffect(() => {
     let isMounted = true
 
@@ -90,7 +97,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
       const { data, error: fetchError } = await supabase
         .from("students")
         .select("*, student_summary(*)")
-        .eq("class_id", classInfo.id)
+        .eq("class_id", classId)
         .order("name", { ascending: true })
 
       if (!isMounted) return
@@ -129,7 +136,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
     return () => {
       isMounted = false
     }
-  }, [classInfo.id])
+  }, [classId])
 
   const topThree = useMemo(
     () => [...students].sort((a, b) => (b.current_streak || 0) - (a.current_streak || 0)).slice(0, 3),

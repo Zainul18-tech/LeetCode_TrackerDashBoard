@@ -46,7 +46,7 @@ type Staff = {
   id: string
   name: string
   email: string
-  role: "HOD" | "Teacher" | "Tutor" | "Class Advisor"
+  role: "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Dean" | "Staff"
   department: string
   year: number | null
   section: string | null
@@ -91,6 +91,17 @@ interface ChartGroupAccumulator {
 const getRegNoFromStudent = (s: Student) => s.reg_no || s.register_number || ""
 const getStudentKey = (s: StudentWithStats) => s.id || getRegNoFromStudent(s)
 
+// "CSE Y3 C" style label -- department + year + section, used in the Top
+// Ranking dialog.
+const getDeptYearSectionLabel = (s: StudentWithStats) => {
+  const parts = [
+    s.department || "",
+    s.year != null ? `Y${s.year}` : "",
+    s.section || "",
+  ].filter(Boolean)
+  return parts.join(" ")
+}
+
 const ALL_VALUE = "all"
 
 export default function DepartmentStudentsPage() {
@@ -112,6 +123,11 @@ export default function DepartmentStudentsPage() {
 
   // Top ranking dialog
   const [rankingOpen, setRankingOpen] = useState(false)
+
+  // HOD only ever sees their own department -- Dean (and anyone else) sees
+  // every department. This flag drives both the data scoping below and
+  // whether the Department filter UI is shown at all.
+  const isHOD = staff?.role === "HOD"
 
   useEffect(() => {
     async function loadData() {
@@ -152,13 +168,22 @@ export default function DepartmentStudentsPage() {
 
       setStaff(staffRow)
 
-      // 3. Every class (across all departments) -- the Department filter
-      //    lets the user narrow this down client-side.
-      const { data: allClasses, error: classesError } = await supabase
+      const staffIsHOD = staffRow.role === "HOD"
+
+      // 3. Classes -- HOD is scoped server-side to their own department;
+      //    Dean (and anyone else landing on this page) gets every
+      //    department, with the Department filter narrowing it client-side.
+      let classesQuery = supabase
         .from("classes")
         .select("*")
         .order("year", { ascending: true })
         .order("section", { ascending: true })
+
+      if (staffIsHOD) {
+        classesQuery = classesQuery.eq("department", staffRow.department)
+      }
+
+      const { data: allClasses, error: classesError } = await classesQuery
 
       if (classesError) {
         setError(classesError.message)
@@ -168,13 +193,16 @@ export default function DepartmentStudentsPage() {
 
       setClasses(allClasses || [])
 
-      // 4. Every student (across all departments), ordered by reg_no by
-      //    default so the list has a stable, predictable base order
-      //    before any search/filter/sort is applied.
-      const { data: studentsResult, error: studentsError } = await supabase
-        .from("students")
-        .select("*")
-        .order("reg_no", { ascending: true })
+      // 4. Students -- same scoping rule as classes above. Ordered by
+      //    reg_no by default so the list has a stable, predictable base
+      //    order before any search/filter/sort is applied.
+      let studentsQuery = supabase.from("students").select("*").order("reg_no", { ascending: true })
+
+      if (staffIsHOD) {
+        studentsQuery = studentsQuery.eq("department", staffRow.department)
+      }
+
+      const { data: studentsResult, error: studentsError } = await studentsQuery
 
       if (studentsError) {
         setError(studentsError.message)
@@ -231,7 +259,9 @@ export default function DepartmentStudentsPage() {
 
   const getRegNo = getRegNoFromStudent
 
-  // Distinct departments available, for the Department filter
+  // Distinct departments available, for the Department filter. Not shown
+  // to HOD (their data is already scoped to one department), but kept
+  // around so nothing else breaks if this ever changes.
   const departments = useMemo(
     () =>
       Array.from(
@@ -245,7 +275,8 @@ export default function DepartmentStudentsPage() {
   )
 
   // Distinct years available, for the Year filter (narrowed to the
-  // selected department if one is picked)
+  // selected department if one is picked -- irrelevant for HOD, whose
+  // classes are already scoped)
   const years = useMemo(() => {
     const scoped =
       deptFilter === ALL_VALUE
@@ -278,7 +309,7 @@ export default function DepartmentStudentsPage() {
   }, [classFilter, classesForYear])
 
   const activeFilterCount =
-    (deptFilter !== ALL_VALUE ? 1 : 0) +
+    (!isHOD && deptFilter !== ALL_VALUE ? 1 : 0) +
     (yearFilter !== ALL_VALUE ? 1 : 0) +
     (effectiveClassFilter !== ALL_VALUE ? 1 : 0) +
     (solvedRank !== "all" ? 1 : 0) +
@@ -299,7 +330,9 @@ export default function DepartmentStudentsPage() {
       s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       getRegNo(s).toLowerCase().includes(searchTerm.toLowerCase())
 
-    const matchesDept = deptFilter === ALL_VALUE || s.department === deptFilter
+    // For HOD this is always true (deptFilter never leaves ALL_VALUE, and
+    // the data is already scoped server-side to their department anyway).
+    const matchesDept = isHOD || deptFilter === ALL_VALUE || s.department === deptFilter
 
     const matchesYear = yearFilter === ALL_VALUE || String(s.year) === yearFilter
 
@@ -319,23 +352,18 @@ export default function DepartmentStudentsPage() {
     yearFilter,
     effectiveClassFilter,
     classes,
+    isHOD,
   ])
 
   // Sort the base pool by whichever ranking selects are active, without
   // dropping any student.
   //
-  // Previously this used a fixed priority chain (Problems solved, then
-  // Hard, then Streak) where later keys only broke ties in the earlier
-  // ones. Since total_solved values are almost always unique, the later
-  // keys effectively never ran -- picking "Streak" alongside "Problems
-  // solved" had no visible effect.
-  //
-  // Instead, each active key now contributes a RANK POSITION (1 = best
-  // for that metric, given its own top/least direction), and a student's
-  // final order is by the AVERAGE of their ranks across every active key.
-  // That way two selected criteria are blended together -- someone who
-  // scores well on both selected metrics rises above someone who only
-  // dominates one of them.
+  // Each active key contributes a RANK POSITION (1 = best for that
+  // metric, given its own top/least direction), and a student's final
+  // order is by the AVERAGE of their ranks across every active key. That
+  // way two selected criteria are blended together -- someone who scores
+  // well on both selected metrics rises above someone who only dominates
+  // one of them.
   const filteredStudents = useMemo(() => {
     const activeKeys: { mode: RankFilter; metric: (s: StudentWithStats) => number }[] = [
       { mode: solvedRank, metric: (s) => s.total_solved ?? 0 },
@@ -383,13 +411,15 @@ export default function DepartmentStudentsPage() {
 
   const topRanked = useMemo(() => {
     let pool = students
-    if (deptFilter !== ALL_VALUE) pool = pool.filter((s) => s.department === deptFilter)
+    if (!isHOD && deptFilter !== ALL_VALUE) pool = pool.filter((s) => s.department === deptFilter)
     if (rankingYear != null) pool = pool.filter((s) => s.year === rankingYear)
     return [...pool].sort((a, b) => (b.total_solved || 0) - (a.total_solved || 0)).slice(0, 10)
-  }, [students, deptFilter, rankingYear])
+  }, [students, deptFilter, rankingYear, isHOD])
 
   const managingLabel = staff
-    ? deptFilter === ALL_VALUE
+    ? isHOD
+      ? `${staff.department} -- All Sections (${classes.length} classes)`
+      : deptFilter === ALL_VALUE
       ? `All Departments (${classes.length} classes)`
       : `${deptFilter} -- All Sections (${classesForYear.length} classes)`
     : ""
@@ -419,7 +449,7 @@ export default function DepartmentStudentsPage() {
   // Which class/year is performing best. Ignores search + ranking sort --
   // this chart is for comparing groups.
   const studentsForChart = students.filter((s) => {
-    const matchesDept = deptFilter === ALL_VALUE || s.department === deptFilter
+    const matchesDept = isHOD || deptFilter === ALL_VALUE || s.department === deptFilter
     const matchesYear = yearFilter === ALL_VALUE || String(s.year) === yearFilter
     const selectedClass =
       effectiveClassFilter === ALL_VALUE ? null : classes.find((c) => c.id === effectiveClassFilter)
@@ -521,7 +551,7 @@ export default function DepartmentStudentsPage() {
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, worksheet, "Students")
 
-    const deptSlug = (deptFilter !== ALL_VALUE ? deptFilter : staff?.department || "department")
+    const deptSlug = (isHOD ? staff?.department : deptFilter !== ALL_VALUE ? deptFilter : staff?.department || "department")!
       .toLowerCase()
       .replace(/\s+/g, "-")
     XLSX.writeFile(workbook, `${deptSlug}-students-${new Date().toISOString().slice(0, 10)}.xlsx`)
@@ -542,7 +572,9 @@ export default function DepartmentStudentsPage() {
       <div className="flex flex-col space-y-8 pb-12">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">All Department Students</h1>
+            <h1 className="text-3xl font-bold tracking-tight">
+              {isHOD ? "All Department Students" : "All Students"}
+            </h1>
             <p className="text-gray-500 dark:text-gray-400">Managing {managingLabel}</p>
           </div>
 
@@ -574,22 +606,26 @@ export default function DepartmentStudentsPage() {
                   )}
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Department</label>
-                  <Select value={deptFilter} onValueChange={setDeptFilter}>
-                    <SelectTrigger className="h-9">
-                      <SelectValue placeholder="All departments" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={ALL_VALUE}>All departments</SelectItem>
-                      {departments.map((d) => (
-                        <SelectItem key={d} value={d}>
-                          {d}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                {/* Department filter -- HOD only ever has one department,
+                    so this is hidden for them entirely. */}
+                {!isHOD && (
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Department</label>
+                    <Select value={deptFilter} onValueChange={setDeptFilter}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="All departments" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={ALL_VALUE}>All departments</SelectItem>
+                        {departments.map((d) => (
+                          <SelectItem key={d} value={d}>
+                            {d}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Year</label>
@@ -690,45 +726,66 @@ export default function DepartmentStudentsPage() {
                 <DialogHeader>
                   <DialogTitle>
                     Top 10 Students{rankingYear != null ? ` -- Year ${rankingYear}` : ""}
-                    {deptFilter !== ALL_VALUE ? ` (${deptFilter})` : ""}
+                    {!isHOD && deptFilter !== ALL_VALUE ? ` (${deptFilter})` : ""}
                   </DialogTitle>
                 </DialogHeader>
                 <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
-                  {topRanked.map((student, idx) => (
-                    <div
-                      key={student.id || getRegNo(student) || `top-${idx}`}
-                      className="flex items-center gap-3 rounded-lg border border-gray-100 p-2 dark:border-gray-800"
-                    >
-                      <div
-                        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-bold text-xs ${
-                          idx === 0
-                            ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300"
-                            : idx === 1
-                            ? "bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200"
-                            : idx === 2
-                            ? "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300"
-                            : "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
-                        }`}
+                  {topRanked.map((student, idx) => {
+                    const regNo = getRegNo(student)
+                    const detailLabel = getDeptYearSectionLabel(student)
+
+                    const rowContent = (
+                      <>
+                        <div
+                          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-bold text-xs ${
+                            idx === 0
+                              ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300"
+                              : idx === 1
+                              ? "bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+                              : idx === 2
+                              ? "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300"
+                              : "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
+                          }`}
+                        >
+                          #{idx + 1}
+                        </div>
+                        <div className="flex-1 overflow-hidden">
+                          <p className="text-sm font-medium leading-none truncate text-gray-900 dark:text-gray-100">
+                            {student.name}
+                          </p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                            {regNo}
+                            {detailLabel ? ` - ${detailLabel}` : ""}
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-sm font-semibold">{student.total_solved ?? 0} solved</p>
+                          <p className="flex items-center justify-end gap-1 text-xs text-orange-500">
+                            <Trophy className="h-3 w-3" />
+                            {student.current_streak ?? 0} streak
+                          </p>
+                        </div>
+                      </>
+                    )
+
+                    const rowClassName =
+                      "flex items-center gap-3 rounded-lg border border-gray-100 p-2 dark:border-gray-800"
+
+                    return regNo ? (
+                      <Link
+                        key={student.id || regNo || `top-${idx}`}
+                        href={`/dashboard/student/${regNo}`}
+                        onClick={() => setRankingOpen(false)}
+                        className={`${rowClassName} transition-colors hover:bg-gray-50 dark:hover:bg-gray-900`}
                       >
-                        #{idx + 1}
+                        {rowContent}
+                      </Link>
+                    ) : (
+                      <div key={student.id || `top-${idx}`} className={rowClassName}>
+                        {rowContent}
                       </div>
-                      <div className="flex-1 overflow-hidden">
-                        <p className="text-sm font-medium leading-none truncate text-gray-900 dark:text-gray-100">
-                          {student.name}
-                        </p>
-                        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                          {getRegNo(student)} - Y{student.year} {student.section}
-                        </p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-sm font-semibold">{student.total_solved ?? 0} solved</p>
-                        <p className="flex items-center justify-end gap-1 text-xs text-orange-500">
-                          <Trophy className="h-3 w-3" />
-                          {student.current_streak ?? 0} streak
-                        </p>
-                      </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                   {topRanked.length === 0 && (
                     <p className="text-sm text-gray-500 text-center py-4">
                       No students available{rankingYear != null ? ` for Year ${rankingYear}` : ""}
@@ -777,7 +834,7 @@ export default function DepartmentStudentsPage() {
               <CardDescription>
                 Avg. Easy / Medium / Hard solved per student
                 {chartGroupedByYear ? ", by year" : `, by section (Year ${yearFilter})`}
-                {effectiveClassFilter !== ALL_VALUE || deptFilter !== ALL_VALUE ? " (filtered)" : ""}
+                {effectiveClassFilter !== ALL_VALUE || (!isHOD && deptFilter !== ALL_VALUE) ? " (filtered)" : ""}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -821,7 +878,7 @@ export default function DepartmentStudentsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>All Department Students</CardTitle>
+              <CardTitle>{isHOD ? "All Department Students" : "All Students"}</CardTitle>
               <CardDescription>
                 {filteredStudents.length} of {students.length} students shown
                 {(solvedRank !== "all" || hardRank !== "all" || streakRank !== "all") && " - sorted"}
