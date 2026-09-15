@@ -399,6 +399,7 @@ export default function DepartmentStudentsPage() {
 
     return [...basePool].sort((a, b) => averageRank(a) - averageRank(b))
   }, [basePool, solvedRank, hardRank, streakRank])
+  
 
   // Which year's leaderboard the Top Ranking dialog shows.
   const defaultRankingYear = useMemo(() => {
