@@ -46,11 +46,16 @@ function isStaticAsset(pathname: string) {
   );
 }
 
-function homePathForRole(_role: string | null | undefined) {
-  // Both role tiers currently land on the same home route; kept as a
-  // function (rather than a constant) so per-role home pages are a
-  // one-line change later.
-  return "/dashboard/staff";
+// Every role currently lands on the same home route, so this map has no
+// entries yet -- but keeping it as a lookup (rather than a bare constant)
+// means giving a specific role its own home page later is a one-line
+// addition here, not a signature change at every call site.
+const ROLE_HOME_PATHS: Record<string, string> = {};
+const DEFAULT_HOME_PATH = "/dashboard/staff";
+
+function homePathForRole(role: string | null | undefined) {
+  if (!role) return DEFAULT_HOME_PATH;
+  return ROLE_HOME_PATHS[role] ?? DEFAULT_HOME_PATH;
 }
 
 // Paths a staff member with this role is allowed to be on without getting

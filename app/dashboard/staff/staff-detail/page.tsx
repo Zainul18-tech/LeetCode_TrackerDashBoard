@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useEffect } from "react"
+import { useCallback, useMemo, useState, useEffect } from "react"
 import DashboardLayout from "@/components/layout/DashboardLayout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -212,25 +212,31 @@ export default function StaffDetailsPage() {
   // aren't "assigned" to a specific class. Status is merged in from
   // class_staff, matched on BOTH class_id and staff_id so a person's
   // status for one class doesn't leak onto another class.
-  const getAssignedTeachers = (cls: ClassRow): StaffWithStatus[] =>
-    deptStaff
-      .filter((s) => s.role !== "HOD" && s.role !== "Dean" && s.year === cls.year && s.section === cls.section)
-      .map((s) => {
-        const match = classStaff.find((cs) => cs.class_id === cls.id && cs.staff_id === s.id)
-        return { ...s, status: match?.status ?? null, status_updated_at: match?.status_updated_at ?? null }
-      })
+  // Wrapped in useCallback so it has a stable identity tied to its real
+  // dependencies (deptStaff, classStaff), which lets classStaffCounts
+  // below declare it as a dependency without recomputing every render.
+  const getAssignedTeachers = useCallback(
+    (cls: ClassRow): StaffWithStatus[] =>
+      deptStaff
+        .filter((s) => s.role !== "HOD" && s.role !== "Dean" && s.year === cls.year && s.section === cls.section)
+        .map((s) => {
+          const match = classStaff.find((cs) => cs.class_id === cls.id && cs.staff_id === s.id)
+          return { ...s, status: match?.status ?? null, status_updated_at: match?.status_updated_at ?? null }
+        }),
+    [deptStaff, classStaff]
+  )
 
   // What actually gets displayed for a class: only the real
   // teacher/tutor/advisor assignments. HOD/Dean are NEVER listed here --
   // if a class has no teacher assigned, the list is simply empty and the
   // UI shows a "contact admin" notice instead.
-  const getStaffForClass = (cls: ClassRow) => getAssignedTeachers(cls)
+  const getStaffForClass = getAssignedTeachers
 
   const classStaffCounts = useMemo(() => {
     const counts = new Map<string, number>()
     classes.forEach((c) => counts.set(c.id, getAssignedTeachers(c).length))
     return counts
-  }, [classes, deptStaff, classStaff])
+  }, [classes, getAssignedTeachers])
 
   // ---- Dean drill-down levels ----
 
@@ -323,7 +329,7 @@ export default function StaffDetailsPage() {
   }
 
   // Reset the whole drill-down back to the top (Departments for Dean,
-  // Classes for everyone else).
+  // Classes for everyone else). Wired to the page title below.
   const resetDrilldown = () => {
     setSelectedDepartment(null)
     setSelectedYear(null)
@@ -378,7 +384,17 @@ export default function StaffDetailsPage() {
       <div className="flex flex-col space-y-8 pb-12">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">Staff Details</h1>
+            <h1
+              className={
+                showBackButton
+                  ? "text-3xl font-bold tracking-tight cursor-pointer hover:text-blue-600 dark:hover:text-blue-500"
+                  : "text-3xl font-bold tracking-tight"
+              }
+              onClick={showBackButton ? resetDrilldown : undefined}
+              title={showBackButton ? "Back to the top" : undefined}
+            >
+              Staff Details
+            </h1>
             <p className="text-gray-500 dark:text-gray-400">{headerSubtitle}</p>
           </div>
 

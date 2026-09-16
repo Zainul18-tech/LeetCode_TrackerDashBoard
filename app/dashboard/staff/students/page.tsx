@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useEffect } from "react"
+import { useCallback, useMemo, useState, useEffect } from "react"
 import DashboardLayout from "@/components/layout/DashboardLayout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -90,6 +90,17 @@ interface ChartGroupAccumulator {
 
 const getRegNoFromStudent = (s: Student) => s.reg_no || s.register_number || ""
 const getStudentKey = (s: StudentWithStats) => s.id || getRegNoFromStudent(s)
+
+// c.year / s.year may come back from the DB as either a number or a
+// numeric string depending on the column's driver-level typing, so every
+// place that needs an actual numeric year goes through this instead of
+// assuming the shape -- avoids both "type predicate not assignable" and
+// "arithmetic on non-number" errors.
+const toYearNumber = (year: unknown): number | null => {
+  if (year === null || year === undefined || year === "") return null
+  const n = Number(year)
+  return Number.isNaN(n) ? null : n
+}
 
 // "CSE Y3 C" style label -- department + year + section, used in the Top
 // Ranking dialog.
@@ -257,8 +268,6 @@ export default function DepartmentStudentsPage() {
     loadData()
   }, [])
 
-  const getRegNo = getRegNoFromStudent
-
   // Distinct departments available, for the Department filter. Not shown
   // to HOD (their data is already scoped to one department), but kept
   // around so nothing else breaks if this ever changes.
@@ -267,7 +276,7 @@ export default function DepartmentStudentsPage() {
       Array.from(
         new Set(
           classes
-            .map((c) => (c as Class & { department?: string }).department)
+            .map((c: Class) => (c as Class & { department?: string }).department)
             .filter((d): d is string => Boolean(d))
         )
       ).sort(),
@@ -276,15 +285,18 @@ export default function DepartmentStudentsPage() {
 
   // Distinct years available, for the Year filter (narrowed to the
   // selected department if one is picked -- irrelevant for HOD, whose
-  // classes are already scoped)
+  // classes are already scoped). Normalized through toYearNumber so this
+  // is always number[], regardless of whether the DB/driver hands back
+  // c.year as a number or a numeric string.
   const years = useMemo(() => {
     const scoped =
       deptFilter === ALL_VALUE
         ? classes
-        : classes.filter((c) => (c as Class & { department?: string }).department === deptFilter)
-    return Array.from(new Set(scoped.map((c) => c.year).filter((y): y is number => y != null))).sort(
-      (a, b) => a - b
-    )
+        : classes.filter((c: Class) => (c as Class & { department?: string }).department === deptFilter)
+    const numericYears = scoped
+      .map((c: Class) => toYearNumber(c.year))
+      .filter((y): y is number => y !== null)
+    return Array.from(new Set(numericYears)).sort((a, b) => a - b)
   }, [classes, deptFilter])
 
   const classLabel = (c: Class) => c.name || `Y${c.year} - Section ${c.section}`
@@ -293,7 +305,7 @@ export default function DepartmentStudentsPage() {
   // department and year.
   const classesForYear = useMemo(
     () =>
-      classes.filter((c) => {
+      classes.filter((c: Class) => {
         const matchesDept =
           deptFilter === ALL_VALUE || (c as Class & { department?: string }).department === deptFilter
         const matchesYear = yearFilter === ALL_VALUE || String(c.year) === yearFilter
@@ -305,7 +317,7 @@ export default function DepartmentStudentsPage() {
   // Derived, not stored -- avoids a "setState in an effect" round trip.
   const effectiveClassFilter = useMemo(() => {
     if (classFilter === ALL_VALUE) return ALL_VALUE
-    return classesForYear.some((c) => c.id === classFilter) ? classFilter : ALL_VALUE
+    return classesForYear.some((c: Class) => c.id === classFilter) ? classFilter : ALL_VALUE
   }, [classFilter, classesForYear])
 
   const activeFilterCount =
@@ -325,35 +337,34 @@ export default function DepartmentStudentsPage() {
     setStreakRank("all")
   }
 
-  const matchesBaseFilters = (s: StudentWithStats) => {
-    const matchesSearch =
-      s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      getRegNo(s).toLowerCase().includes(searchTerm.toLowerCase())
+  // Wrapped in useCallback so basePool's useMemo below can safely declare
+  // it as a dependency instead of triggering the exhaustive-deps warning.
+  const matchesBaseFilters = useCallback(
+    (s: StudentWithStats) => {
+      const matchesSearch =
+        s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        getRegNoFromStudent(s).toLowerCase().includes(searchTerm.toLowerCase())
 
-    // For HOD this is always true (deptFilter never leaves ALL_VALUE, and
-    // the data is already scoped server-side to their department anyway).
-    const matchesDept = isHOD || deptFilter === ALL_VALUE || s.department === deptFilter
+      // For HOD this is always true (deptFilter never leaves ALL_VALUE, and
+      // the data is already scoped server-side to their department anyway).
+      const matchesDept = isHOD || deptFilter === ALL_VALUE || s.department === deptFilter
 
-    const matchesYear = yearFilter === ALL_VALUE || String(s.year) === yearFilter
+      const matchesYear = yearFilter === ALL_VALUE || String(s.year) === yearFilter
 
-    const selectedClass =
-      effectiveClassFilter === ALL_VALUE ? null : classes.find((c) => c.id === effectiveClassFilter)
-    const matchesClass = !selectedClass || (s.year === selectedClass.year && s.section === selectedClass.section)
+      const selectedClass =
+        effectiveClassFilter === ALL_VALUE ? null : classes.find((c: Class) => c.id === effectiveClassFilter)
+      const matchesClass =
+        !selectedClass ||
+        (toYearNumber(s.year) === toYearNumber(selectedClass.year) && s.section === selectedClass.section)
 
-    return matchesSearch && matchesDept && matchesYear && matchesClass
-  }
+      return matchesSearch && matchesDept && matchesYear && matchesClass
+    },
+    [searchTerm, isHOD, deptFilter, yearFilter, effectiveClassFilter, classes]
+  )
 
   // Everyone who passes search / dept / year / class filters. This is the
   // full visible set -- sorting below never removes anyone from it.
-  const basePool = useMemo(() => students.filter(matchesBaseFilters), [
-    students,
-    searchTerm,
-    deptFilter,
-    yearFilter,
-    effectiveClassFilter,
-    classes,
-    isHOD,
-  ])
+  const basePool = useMemo(() => students.filter(matchesBaseFilters), [students, matchesBaseFilters])
 
   // Sort the base pool by whichever ranking selects are active, without
   // dropping any student.
@@ -366,16 +377,18 @@ export default function DepartmentStudentsPage() {
   // one of them.
   const filteredStudents = useMemo(() => {
     const activeKeys: { mode: RankFilter; metric: (s: StudentWithStats) => number }[] = [
-      { mode: solvedRank, metric: (s) => s.total_solved ?? 0 },
-      { mode: hardRank, metric: (s) => s.hard_count ?? 0 },
-      { mode: streakRank, metric: (s) => s.current_streak ?? 0 },
+      { mode: solvedRank, metric: (s: StudentWithStats) => s.total_solved ?? 0 },
+      { mode: hardRank, metric: (s: StudentWithStats) => s.hard_count ?? 0 },
+      { mode: streakRank, metric: (s: StudentWithStats) => s.current_streak ?? 0 },
     ].filter((k) => k.mode !== "all")
 
     if (activeKeys.length === 0) {
       // No ranking sort active -- fall back to reg_no order so the list
       // stays predictable rather than whatever order the data happened
       // to load in.
-      return [...basePool].sort((a, b) => getRegNo(a).localeCompare(getRegNo(b), undefined, { numeric: true }))
+      return [...basePool].sort((a, b) =>
+        getRegNoFromStudent(a).localeCompare(getRegNoFromStudent(b), undefined, { numeric: true })
+      )
     }
 
     // Build a rank-position map (student key -> 1-based rank) for one
@@ -399,21 +412,22 @@ export default function DepartmentStudentsPage() {
 
     return [...basePool].sort((a, b) => averageRank(a) - averageRank(b))
   }, [basePool, solvedRank, hardRank, streakRank])
-  
 
-  // Which year's leaderboard the Top Ranking dialog shows.
+  // Which year's leaderboard the Top Ranking dialog shows. `years` is
+  // guaranteed number[] (see above), so `.includes(4)` / `.includes(3)`
+  // compare number to number correctly.
   const defaultRankingYear = useMemo(() => {
     if (years.includes(4)) return 4
     if (years.includes(3)) return 3
     return years.length > 0 ? years[years.length - 1] : null
   }, [years])
 
-  const rankingYear = yearFilter !== ALL_VALUE ? Number(yearFilter) : defaultRankingYear
+  const rankingYear = yearFilter !== ALL_VALUE ? toYearNumber(yearFilter) : defaultRankingYear
 
   const topRanked = useMemo(() => {
     let pool = students
-    if (!isHOD && deptFilter !== ALL_VALUE) pool = pool.filter((s) => s.department === deptFilter)
-    if (rankingYear != null) pool = pool.filter((s) => s.year === rankingYear)
+    if (!isHOD && deptFilter !== ALL_VALUE) pool = pool.filter((s: StudentWithStats) => s.department === deptFilter)
+    if (rankingYear != null) pool = pool.filter((s: StudentWithStats) => toYearNumber(s.year) === rankingYear)
     return [...pool].sort((a, b) => (b.total_solved || 0) - (a.total_solved || 0)).slice(0, 10)
   }, [students, deptFilter, rankingYear, isHOD])
 
@@ -449,12 +463,14 @@ export default function DepartmentStudentsPage() {
 
   // Which class/year is performing best. Ignores search + ranking sort --
   // this chart is for comparing groups.
-  const studentsForChart = students.filter((s) => {
+  const studentsForChart = students.filter((s: StudentWithStats) => {
     const matchesDept = isHOD || deptFilter === ALL_VALUE || s.department === deptFilter
     const matchesYear = yearFilter === ALL_VALUE || String(s.year) === yearFilter
     const selectedClass =
-      effectiveClassFilter === ALL_VALUE ? null : classes.find((c) => c.id === effectiveClassFilter)
-    const matchesClass = !selectedClass || (s.year === selectedClass.year && s.section === selectedClass.section)
+      effectiveClassFilter === ALL_VALUE ? null : classes.find((c: Class) => c.id === effectiveClassFilter)
+    const matchesClass =
+      !selectedClass ||
+      (toYearNumber(s.year) === toYearNumber(selectedClass.year) && s.section === selectedClass.section)
 
     return matchesDept && matchesYear && matchesClass
   })
@@ -464,7 +480,7 @@ export default function DepartmentStudentsPage() {
   const classPerformance = useMemo(() => {
     const map = new Map<string, ChartGroupAccumulator>()
 
-    studentsForChart.forEach((s) => {
+    studentsForChart.forEach((s: StudentWithStats) => {
       const groupLabel = chartGroupedByYear
         ? `Y${s.year ?? "?"}`
         : s.section
@@ -518,7 +534,7 @@ export default function DepartmentStudentsPage() {
     ]
 
     const rows = filteredStudents.map((s) => [
-      getRegNo(s),
+      getRegNoFromStudent(s),
       s.name,
       s.department,
       s.year,
@@ -732,7 +748,7 @@ export default function DepartmentStudentsPage() {
                 </DialogHeader>
                 <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
                   {topRanked.map((student, idx) => {
-                    const regNo = getRegNo(student)
+                    const regNo = getRegNoFromStudent(student)
                     const detailLabel = getDeptYearSectionLabel(student)
 
                     const rowContent = (
@@ -915,7 +931,7 @@ export default function DepartmentStudentsPage() {
               </TableHeader>
               <TableBody>
                 {filteredStudents.map((student, idx) => {
-                  const regNo = getRegNo(student)
+                  const regNo = getRegNoFromStudent(student)
                   return (
                     <TableRow key={student.id || regNo || `row-${idx}`}>
                       <TableCell className="font-medium">{regNo}</TableCell>

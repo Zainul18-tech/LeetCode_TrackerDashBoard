@@ -14,12 +14,44 @@ import {
   Cell
 } from "recharts"
 
-interface ChartProps {
-  data: any[]
+// Each chart consumes a different data shape, so instead of one loose
+// `any[]` prop, every chart gets its own narrow datum type. This keeps
+// type-checking meaningful (e.g. DifficultyPieChart can't be passed bar
+// data by mistake) while still being just as easy to call.
+
+interface BarDatum {
+  name: string
+  solved: number
+}
+
+interface BarChartProps {
+  data: BarDatum[]
   className?: string
 }
 
-export function OverviewBarChart({ data }: ChartProps) {
+interface LineDatum {
+  name: string
+  solved: number
+  expected?: number
+}
+
+interface LineChartProps {
+  data: LineDatum[]
+  className?: string
+}
+
+interface PieDatum {
+  name?: string
+  value: number
+  fill: string
+}
+
+interface PieChartProps {
+  data: PieDatum[]
+  className?: string
+}
+
+export function OverviewBarChart({ data }: BarChartProps) {
   return (
     <ResponsiveContainer width="100%" height={350}>
       <BarChart data={data}>
@@ -35,7 +67,7 @@ export function OverviewBarChart({ data }: ChartProps) {
           fontSize={12}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(value) => `${value}`}
+          tickFormatter={(value: number) => `${value}`}
         />
         <Tooltip 
           cursor={{ fill: 'rgba(0,0,0,0.05)' }} 
@@ -47,7 +79,7 @@ export function OverviewBarChart({ data }: ChartProps) {
   )
 }
 
-export function ProgressLineChart({ data }: ChartProps) {
+export function ProgressLineChart({ data }: LineChartProps) {
   return (
     <ResponsiveContainer width="100%" height={350}>
       <LineChart data={data}>
@@ -84,7 +116,7 @@ export function ProgressLineChart({ data }: ChartProps) {
   )
 }
 
-export function DifficultyPieChart({ data }: ChartProps) {
+export function DifficultyPieChart({ data }: PieChartProps) {
   return (
     <ResponsiveContainer width="100%" height={300}>
       <PieChart>
@@ -97,7 +129,7 @@ export function DifficultyPieChart({ data }: ChartProps) {
           paddingAngle={5}
           dataKey="value"
         >
-          {data.map((entry, index) => (
+          {data.map((entry: PieDatum, index: number) => (
             <Cell key={`cell-${index}`} fill={entry.fill} />
           ))}
         </Pie>

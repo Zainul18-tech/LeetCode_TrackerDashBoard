@@ -2,9 +2,9 @@
 
 import DashboardLayout from "@/components/layout/DashboardLayout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { OverviewBarChart, ProgressLineChart, DifficultyPieChart } from "@/components/ui/charts"
+import { OverviewBarChart, DifficultyPieChart } from "@/components/ui/charts"
 import { MOCK_CLASSES, MOCK_CHART_DATA, MOCK_STUDENTS } from "@/lib/mock-data"
-import { Users, GraduationCap, CheckCircle2, Trophy, ArrowRight, UserX, Activity, Target } from "lucide-react"
+import { Users, GraduationCap, Trophy, ArrowRight, Activity, Target } from "lucide-react"
 import Link from "next/link"
 import { motion } from "framer-motion"
 

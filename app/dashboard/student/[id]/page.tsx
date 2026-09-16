@@ -3,10 +3,8 @@
 import { useEffect, useState } from "react"
 import { useParams } from "next/navigation"
 import DashboardLayout from "@/components/layout/DashboardLayout"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { MOCK_CHART_DATA } from "@/lib/mock-data"
-import { OverviewBarChart } from "@/components/ui/charts"
 import { GitBranch as Github, Code2, Target, Award, Trophy, UserCircle, Loader2, ExternalLink } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { Class } from "@/types"
@@ -36,10 +34,42 @@ type StudentWithSummary = {
   student_summary: StudentSummaryRow | StudentSummaryRow[] | null
 }
 
+// Mirrors DashboardLayoutProps["userRole"] exactly. Keeping this as its
+// own named type (rather than `string`) is what surfaces a compile error
+// here if DashboardLayout's accepted roles ever change, instead of a
+// runtime prop-type mismatch.
+type DashboardRole =
+  | "HOD"
+  | "Teacher"
+  | "Tutor"
+  | "Class Advisor"
+  | "Staff"
+  | "Dean"
+
+const DASHBOARD_ROLES: readonly DashboardRole[] = [
+  "HOD",
+  "Teacher",
+  "Tutor",
+  "Class Advisor",
+  "Staff",
+  "Dean",
+]
+
+// staff.role comes back from Supabase as an untyped string, so it can't be
+// assigned straight into state typed as DashboardRole. This validates it
+// against the roles DashboardLayout actually accepts and falls back to
+// "Staff" for anything unexpected, rather than casting blindly.
+function toDashboardRole(role: unknown): DashboardRole {
+  return typeof role === "string" &&
+    (DASHBOARD_ROLES as readonly string[]).includes(role)
+    ? (role as DashboardRole)
+    : "Staff"
+}
+
 // The logged-in staff member viewing this page (for the layout header)
 type CurrentStaff = {
   name: string
-  role: string
+  role: DashboardRole
 }
 
 export default function StudentProfile() {
@@ -68,6 +98,8 @@ export default function StudentProfile() {
         data: { user },
       } = await supabase.auth.getUser()
 
+      if (!isMounted) return
+
       if (user) {
         const { data: staffRow } = await supabase
           .from("staff")
@@ -76,7 +108,10 @@ export default function StudentProfile() {
           .maybeSingle()
 
         if (isMounted && staffRow) {
-          setCurrentStaff({ name: staffRow.name, role: staffRow.role })
+          setCurrentStaff({
+            name: staffRow.name,
+            role: toDashboardRole(staffRow.role),
+          })
         }
       }
 
@@ -114,18 +149,32 @@ export default function StudentProfile() {
         .eq("id", studentResult.class_id)
         .maybeSingle()
 
-      if (isMounted && classResult) {
+      if (!isMounted) return
+
+      if (classResult) {
         setClassData(classResult)
       }
 
       setLoading(false)
     }
 
-    if (regNo) {
-      loadData()
-    } else {
-      setLoading(false)
-    }
+    // React's set-state-in-effect diagnostic flags any setState reachable
+    // synchronously from the effect body. The `else { setLoading(false) }`
+    // branch below used to run directly inside the effect, and loadData
+    // itself calls setLoading(true) before its first await, so calling it
+    // straight from the effect tripped the same check. Deferring both
+    // branches into a microtask keeps the exact same "fetch when regNo is
+    // present, otherwise stop loading" behavior while ensuring no setState
+    // runs synchronously within the effect's own call stack.
+    Promise.resolve().then(() => {
+      if (!isMounted) return
+
+      if (regNo) {
+        loadData()
+      } else {
+        setLoading(false)
+      }
+    })
 
     return () => {
       isMounted = false

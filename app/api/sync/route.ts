@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 
 // This would use service role key in production to bypass RLS for background jobs
 // const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
 
-export async function POST(request: Request) {
+// The route doesn't (yet) read anything from the incoming request -- no
+// body, headers, or query params are used -- so the parameter is simply
+// omitted rather than declared and left unused. Next.js's app router
+// doesn't require handlers to declare every argument it can pass.
+export async function POST() {
   try {
     // Simulated Backend Sync Process
     // 1. Fetch all students from Supabase
@@ -42,14 +45,18 @@ export async function POST(request: Request) {
       message: "Successfully synced latest LeetCode data for all students." 
     }, { status: 200 });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Sync Error:", error);
-    
+
+    // Narrow before reading `.message` -- caught values aren't guaranteed
+    // to be Error instances.
+    // const details = error instanceof Error ? error.message : String(error);
+
     // Log failure
     // await supabase.from('sync_logs').insert({
     //   timestamp: new Date().toISOString(),
     //   status: 'Failed',
-    //   details: error.message
+    //   details,
     // });
 
     return NextResponse.json({ 

@@ -58,7 +58,12 @@ export type StudentWithSummary = StudentRow & {
 // filters stays visible, just in a different order.
 type RankFilter = "all" | "top" | "least"
 
-const getStudentKey = (s: StudentWithSummary) => s.id || s.reg_no
+type RankMetric = {
+  mode: RankFilter
+  metric: (s: StudentWithSummary) => number
+}
+
+const getStudentKey = (s: StudentWithSummary): string => s.id || s.reg_no
 
 interface ClassDetailPanelProps {
   classInfo: Class
@@ -109,10 +114,15 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
         return
       }
 
-      const normalized: StudentWithSummary[] = (data || []).map((row: any) => {
+      // The Supabase client can't infer the shape of a raw string .select(),
+      // so we assert the known row shape once here instead of sprinkling
+      // `any` through the mapping logic below.
+      const rows = (data ?? []) as unknown as StudentRow[]
+
+      const normalized: StudentWithSummary[] = rows.map((row: StudentRow) => {
         const summary: StudentSummary | null = Array.isArray(row.student_summary)
-          ? row.student_summary[0] || null
-          : row.student_summary || null
+          ? row.student_summary[0] ?? null
+          : row.student_summary ?? null
 
         const easy = summary?.easy_count ?? 0
         const medium = summary?.medium_count ?? 0
@@ -139,7 +149,10 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
   }, [classId])
 
   const topThree = useMemo(
-    () => [...students].sort((a, b) => (b.current_streak || 0) - (a.current_streak || 0)).slice(0, 3),
+    () =>
+      [...students]
+        .sort((a: StudentWithSummary, b: StudentWithSummary) => (b.current_streak || 0) - (a.current_streak || 0))
+        .slice(0, 3),
     [students]
   )
 
@@ -147,13 +160,13 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
   // sorting below never removes anyone from it.
   const basePool = useMemo(() => {
     let list = students.filter(
-      (s) =>
+      (s: StudentWithSummary) =>
         s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         s.reg_no.toLowerCase().includes(searchTerm.toLowerCase())
     )
 
     if (leetcodeOnly) {
-      list = list.filter((s) => !!s.leetcode_username)
+      list = list.filter((s: StudentWithSummary) => !!s.leetcode_username)
     }
 
     return list
@@ -167,32 +180,40 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
   // student strong on both selected metrics rises above one who only
   // dominates a single metric.
   const visibleStudents = useMemo(() => {
-    const activeKeys: { mode: RankFilter; metric: (s: StudentWithSummary) => number }[] = [
-      { mode: solvedRank, metric: (s) => s.total_solved },
-      { mode: hardRank, metric: (s) => s.hard_count },
-      { mode: streakRank, metric: (s) => s.current_streak },
-    ].filter((k) => k.mode !== "all")
+    const activeKeys: RankMetric[] = [
+      { mode: solvedRank, metric: (s: StudentWithSummary) => s.total_solved },
+      { mode: hardRank, metric: (s: StudentWithSummary) => s.hard_count },
+      { mode: streakRank, metric: (s: StudentWithSummary) => s.current_streak },
+    ].filter((k: RankMetric) => k.mode !== "all")
 
     if (activeKeys.length === 0) return basePool
 
-    const buildRankMap = (metric: (s: StudentWithSummary) => number, mode: RankFilter) => {
-      const sorted = [...basePool].sort((a, b) =>
+    const buildRankMap = (
+      metric: (s: StudentWithSummary) => number,
+      mode: RankFilter
+    ): Map<string, number> => {
+      const sorted = [...basePool].sort((a: StudentWithSummary, b: StudentWithSummary) =>
         mode === "top" ? metric(b) - metric(a) : metric(a) - metric(b)
       )
       const map = new Map<string, number>()
-      sorted.forEach((s, idx) => map.set(getStudentKey(s), idx + 1))
+      sorted.forEach((s: StudentWithSummary, idx: number) => map.set(getStudentKey(s), idx + 1))
       return map
     }
 
-    const rankMaps = activeKeys.map(({ metric, mode }) => buildRankMap(metric, mode))
+    const rankMaps: Map<string, number>[] = activeKeys.map(({ metric, mode }: RankMetric) =>
+      buildRankMap(metric, mode)
+    )
 
-    const averageRank = (s: StudentWithSummary) => {
+    const averageRank = (s: StudentWithSummary): number => {
       const key = getStudentKey(s)
-      const total = rankMaps.reduce((sum, map) => sum + (map.get(key) ?? Number.MAX_SAFE_INTEGER), 0)
+      const total = rankMaps.reduce(
+        (sum: number, map: Map<string, number>) => sum + (map.get(key) ?? Number.MAX_SAFE_INTEGER),
+        0
+      )
       return total / rankMaps.length
     }
 
-    return [...basePool].sort((a, b) => averageRank(a) - averageRank(b))
+    return [...basePool].sort((a: StudentWithSummary, b: StudentWithSummary) => averageRank(a) - averageRank(b))
   }, [basePool, solvedRank, hardRank, streakRank])
 
   const className = classInfo.name || `${classInfo.department} Y${classInfo.year} ${classInfo.section}`
@@ -252,7 +273,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
           <>
             {/* Top 3 leaderboard by streak */}
             <div className="grid gap-3 sm:grid-cols-3">
-              {topThree.map((student, idx) => (
+              {topThree.map((student: StudentWithSummary, idx: number) => (
                 <div
                   key={student.reg_no}
                   className="flex items-center gap-3 rounded-lg border border-gray-200 p-3 dark:border-gray-800"
@@ -290,7 +311,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
                 <Button
                   variant={leetcodeOnly ? "default" : "outline"}
                   size="sm"
-                  onClick={() => setLeetcodeOnly((v) => !v)}
+                  onClick={() => setLeetcodeOnly((v: boolean) => !v)}
                 >
                   <Link2 className="mr-1 h-3 w-3" />
                   LeetCode Linked
@@ -300,7 +321,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
                   <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">
                     Problems solved
                   </label>
-                  <Select value={solvedRank} onValueChange={(v) => setSolvedRank(v as RankFilter)}>
+                  <Select value={solvedRank} onValueChange={(v: string) => setSolvedRank(v as RankFilter)}>
                     <SelectTrigger className="h-9 w-[150px]">
                       <SelectValue placeholder="No sort" />
                     </SelectTrigger>
@@ -316,7 +337,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
                   <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">
                     Hard problems solved
                   </label>
-                  <Select value={hardRank} onValueChange={(v) => setHardRank(v as RankFilter)}>
+                  <Select value={hardRank} onValueChange={(v: string) => setHardRank(v as RankFilter)}>
                     <SelectTrigger className="h-9 w-[150px]">
                       <SelectValue placeholder="No sort" />
                     </SelectTrigger>
@@ -330,7 +351,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
 
                 <div className="space-y-1">
                   <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">Streak</label>
-                  <Select value={streakRank} onValueChange={(v) => setStreakRank(v as RankFilter)}>
+                  <Select value={streakRank} onValueChange={(v: string) => setStreakRank(v as RankFilter)}>
                     <SelectTrigger className="h-9 w-[150px]">
                       <SelectValue placeholder="No sort" />
                     </SelectTrigger>
@@ -350,7 +371,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
                   placeholder="Search students..."
                   className="pl-9 h-9"
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
                 />
               </div>
             </div>
@@ -372,7 +393,7 @@ export default function ClassDetailPanel({ classInfo }: ClassDetailPanelProps) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {visibleStudents.map((student) => (
+                {visibleStudents.map((student: StudentWithSummary) => (
                   <TableRow key={student.reg_no}>
                     <TableCell className="font-medium">{student.reg_no}</TableCell>
                     <TableCell>{student.name}</TableCell>

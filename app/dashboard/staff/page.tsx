@@ -9,7 +9,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import {
   Users,
-  FileEdit,
   Search,
   Loader2,
   ExternalLink,
@@ -87,16 +86,31 @@ type TaskRow = {
   task_classes?: { class_id: string }[]
 }
 
+// Shape of each row returned by the class_staff join query below.
+// Supabase's generated types can report the `classes` relation as either
+// a single object or an array depending on how it infers the foreign-key
+// cardinality, so both possibilities are modeled here explicitly instead
+// of reaching for `any`.
+type ClassStaffAssignment = {
+  class_id: string
+  role: string
+  classes: Class | Class[] | null
+}
+
 const getRegNoFromStudent = (s: Student) => s.reg_no || s.register_number || ""
 
 // A task is "in scope" if it targets any class currently in `scopeClasses`
 // — which is already role-scoped by the time this runs: every class in the
 // department for an HOD, every class in the institution for a Dean, or
 // just the classes this staff member is assigned to otherwise.
+//
+// `task.target_years` is number[] while `Class.year` is typed as string,
+// so both sides are normalized to strings before comparing.
 function isTaskInScope(task: TaskRow, scopeClasses: Class[]): boolean {
   if (task.applies_to_all_classes) {
     if (!task.target_years || task.target_years.length === 0) return true
-    return scopeClasses.some((c) => task.target_years!.includes(c.year))
+    const targetYears = task.target_years.map((y) => String(y))
+    return scopeClasses.some((c) => targetYears.includes(String(c.year)))
   }
   const explicitClassIds = new Set((task.task_classes || []).map((tc) => tc.class_id))
   return scopeClasses.some((c) => explicitClassIds.has(c.id))
@@ -218,7 +232,7 @@ export default function StaffDashboard() {
         // error for a Dean — students are still fetched directly below.
       } else {
         // Teacher / Tutor / Class Advisor: only classes they're assigned to via class_staff
-        const { data: assignments, error: assignError } = await supabase
+        const { data: rawAssignments, error: assignError } = await supabase
           .from("class_staff")
           .select("class_id, role, classes(*)")
           .eq("staff_id", staffRow.id)
@@ -229,7 +243,9 @@ export default function StaffDashboard() {
           return
         }
 
-        if (!assignments || assignments.length === 0) {
+        const assignments = (rawAssignments || []) as ClassStaffAssignment[]
+
+        if (assignments.length === 0) {
           setError(
             "No class is assigned to you yet. Ask your HOD to add you in class_staff for your class."
           )
@@ -237,10 +253,12 @@ export default function StaffDashboard() {
           return
         }
 
-        classResults = assignments
-          .map((a: any) => a.classes)
-          .filter(Boolean) as Class[]
-        classIds = assignments.map((a: any) => a.class_id)
+        // `classes` may come back as a single object or an array depending
+        // on Supabase's inferred relation cardinality — normalize both.
+        classResults = assignments.flatMap((a) =>
+          Array.isArray(a.classes) ? a.classes : a.classes ? [a.classes] : []
+        )
+        classIds = assignments.map((a) => a.class_id)
       }
 
       setClasses(classResults)
@@ -510,7 +528,6 @@ export default function StaffDashboard() {
             <p className="text-gray-500 dark:text-gray-400">Managing {managingLabel}</p>
           </div>
           <div className="flex items-center gap-2">
-            
             <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" size="icon" aria-label="Open settings">

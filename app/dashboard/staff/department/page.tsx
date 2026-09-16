@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useEffect } from "react"
+import { useCallback, useMemo, useState, useEffect } from "react"
 import DashboardLayout from "@/components/layout/DashboardLayout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -51,7 +51,10 @@ export default function DeanClassBrowserPage() {
   const [myStaff, setMyStaff] = useState<StaffRow | null>(null)
   const [classes, setClasses] = useState<ClassRow[]>([])
   const [deptStaff, setDeptStaff] = useState<StaffRow[]>([])
-  const [classStaff, setClassStaff] = useState<ClassStaffRow[]>([])
+  // classStaff is fetched for potential future status/count use on the
+  // ClassDetailPanel; it isn't read directly in this file's memoized
+  // calculations (those derive counts from deptStaff instead).
+  const [, setClassStaff] = useState<ClassStaffRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -166,14 +169,22 @@ export default function DeanClassBrowserPage() {
   // Advisor rows whose own year+section matches this class exactly.
   // HOD/Dean rows are excluded -- they oversee, they aren't "assigned"
   // to a specific class.
-  const getAssignedTeachers = (cls: ClassRow) =>
-    deptStaff.filter((s) => s.role !== "HOD" && s.role !== "Dean" && s.year === cls.year && s.section === cls.section)
+  // Wrapped in useCallback so it has a stable identity tied to its real
+  // dependency (deptStaff), which lets classStaffCounts below declare it
+  // as a dependency without recomputing on every render.
+  const getAssignedTeachers = useCallback(
+    (cls: ClassRow) =>
+      deptStaff.filter(
+        (s) => s.role !== "HOD" && s.role !== "Dean" && s.year === cls.year && s.section === cls.section
+      ),
+    [deptStaff]
+  )
 
   const classStaffCounts = useMemo(() => {
     const counts = new Map<string, number>()
     classes.forEach((c) => counts.set(c.id, getAssignedTeachers(c).length))
     return counts
-  }, [classes, deptStaff, classStaff])
+  }, [classes, getAssignedTeachers])
 
   // ---- Level 1: departments ----
   const departments = useMemo(
@@ -275,7 +286,13 @@ export default function DeanClassBrowserPage() {
       <div className="flex flex-col space-y-8 pb-12">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">Classes</h1>
+            <h1
+              className={showBackButton ? "text-3xl font-bold tracking-tight cursor-pointer hover:text-blue-600 dark:hover:text-blue-500" : "text-3xl font-bold tracking-tight"}
+              onClick={showBackButton ? resetDrilldown : undefined}
+              title={showBackButton ? "Back to all departments" : undefined}
+            >
+              Classes
+            </h1>
             <p className="text-gray-500 dark:text-gray-400">{headerSubtitle}</p>
           </div>
 

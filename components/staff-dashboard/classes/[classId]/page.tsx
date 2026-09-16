@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useParams } from "next/navigation"
 import DashboardLayout from "@/components/layout/DashboardLayout"
 import { Card, CardContent } from "@/components/ui/card"
@@ -9,36 +9,47 @@ import { createClient } from "@/lib/supabase/client"
 import { useStaffClasses } from "@/lib/hooks/use-staff-classes"
 import ClassDetailPanel from "@/components/staff-dashboard/ClassDetailPanel"
 import { Class } from "@/types"
+import type { ComponentProps } from "react"
+
+type DashboardUserRole = ComponentProps<typeof DashboardLayout>["userRole"]
+
+type FallbackResult = {
+  id: string
+  data: Class | null
+  error: string | null
+}
 
 export default function ClassPage() {
   const params = useParams<{ classId: string }>()
   const classId = params?.classId as string
 
   const { staff, classes, loading: staffLoading, error: staffError } = useStaffClasses()
-  const [classInfo, setClassInfo] = useState<Class | null>(null)
-  const [loadingClass, setLoadingClass] = useState(true)
-  const [classError, setClassError] = useState<string | null>(null)
+
+  // Derived, not fetched — compute during render instead of syncing via an effect.
+  const fromList = useMemo(
+    () => classes.find((c) => c.id === classId) ?? null,
+    [classes, classId]
+  )
+
+  // Only ever written to from inside the async callback, after the network
+  // request resolves — never synchronously at the top of the effect.
+  const [fallbackResult, setFallbackResult] = useState<FallbackResult | null>(null)
+
+  const needsFallbackFetch = !staffLoading && !staffError && !fromList
+
+  // Everything below is *derived* from fallbackResult rather than tracked as
+  // its own separately-set loading/error state, so the effect never needs to
+  // call setState synchronously before the await.
+  const hasResultForCurrentId = fallbackResult?.id === classId
+  const fetchedClassInfo = hasResultForCurrentId ? fallbackResult!.data : null
+  const fallbackError = hasResultForCurrentId ? fallbackResult!.error : null
+  const isFallbackPending = needsFallbackFetch && !hasResultForCurrentId
 
   useEffect(() => {
-    if (staffLoading) return
+    if (!needsFallbackFetch) return
 
-    // Prefer the already access-scoped list from useStaffClasses
-    const fromList = classes.find((c) => c.id === classId)
-    if (fromList) {
-      setClassInfo(fromList)
-      setLoadingClass(false)
-      return
-    }
-
-    if (staffError) {
-      // Staff/class list failed to load entirely — don't fall through to a raw fetch
-      setLoadingClass(false)
-      return
-    }
-
-    // Fallback direct fetch (still protected by your RLS policies) in case the
-    // list state hasn't settled yet on first paint
     let isMounted = true
+
     async function loadClass() {
       const supabase = createClient()
       const { data, error } = await supabase.from("classes").select("*").eq("id", classId).maybeSingle()
@@ -46,27 +57,31 @@ export default function ClassPage() {
       if (!isMounted) return
 
       if (error) {
-        setClassError(error.message)
+        setFallbackResult({ id: classId, data: null, error: error.message })
       } else if (!data) {
-        setClassError("Class not found, or you don't have access to it.")
+        setFallbackResult({
+          id: classId,
+          data: null,
+          error: "Class not found, or you don't have access to it.",
+        })
       } else {
-        setClassInfo(data)
+        setFallbackResult({ id: classId, data, error: null })
       }
-      setLoadingClass(false)
     }
 
     loadClass()
     return () => {
       isMounted = false
     }
-  }, [staffLoading, staffError, classes, classId])
+  }, [needsFallbackFetch, classId])
 
-  const loading = staffLoading || loadingClass
-  const error = staffError || classError
+  const classInfo = fromList || fetchedClassInfo
+  const loading = staffLoading || isFallbackPending
+  const error = staffError || fallbackError
 
   if (loading) {
     return (
-      <DashboardLayout userRole={staff?.role as any} userName={staff?.name || "Staff"}>
+      <DashboardLayout userRole={staff?.role as DashboardUserRole} userName={staff?.name || "Staff"}>
         <div className="flex h-96 items-center justify-center">
           <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
         </div>
@@ -75,7 +90,7 @@ export default function ClassPage() {
   }
 
   return (
-    <DashboardLayout userRole={staff?.role as any} userName={staff?.name || "Staff"}>
+    <DashboardLayout userRole={staff?.role as DashboardUserRole} userName={staff?.name || "Staff"}>
       <div className="flex flex-col space-y-6 pb-12">
         {error || !classInfo ? (
           <Card className="border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/30">

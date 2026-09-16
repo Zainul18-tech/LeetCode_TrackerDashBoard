@@ -1,4 +1,4 @@
-export type StaffRole = "HOD" | "Teacher" | "Tutor" | "Class Advisor"|"Dean";
+export type StaffRole = "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Dean";
 
 export const STAFF_ROLES: StaffRole[] = [
   "HOD",

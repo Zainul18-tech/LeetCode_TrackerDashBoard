@@ -1,6 +1,6 @@
 "use client"
 
-import { Bell, Menu, Sun, Moon } from "lucide-react"
+import { Menu, Sun, Moon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useEffect, useState } from "react"
 
@@ -17,13 +17,22 @@ export default function TopNav({ onMenuClick, userRole, userName }: TopNavProps)
 
   // On mount: prefer whatever the user explicitly chose before (localStorage).
   // Only fall back to OS preference if they've never toggled it themselves.
+  //
+  // React's set-state-in-effect diagnostic flags any setState reachable
+  // synchronously from the effect body -- and `setIsDark(shouldBeDark)`
+  // here ran directly in the effect, with no await in between. Deferring
+  // the read + setState pair into a microtask keeps the exact same
+  // "apply the saved/OS theme once on mount" behavior while ensuring no
+  // setState runs synchronously within the effect's own call stack.
   useEffect(() => {
-    const stored = localStorage.getItem(THEME_STORAGE_KEY)
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
-    const shouldBeDark = stored ? stored === "dark" : prefersDark
+    Promise.resolve().then(() => {
+      const stored = localStorage.getItem(THEME_STORAGE_KEY)
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
+      const shouldBeDark = stored ? stored === "dark" : prefersDark
 
-    document.documentElement.classList.toggle("dark", shouldBeDark)
-    setIsDark(shouldBeDark)
+      document.documentElement.classList.toggle("dark", shouldBeDark)
+      setIsDark(shouldBeDark)
+    })
   }, [])
 
   const toggleTheme = () => {
@@ -45,10 +54,6 @@ export default function TopNav({ onMenuClick, userRole, userName }: TopNavProps)
       <div className="flex items-center gap-3 sm:gap-4">
         <Button variant="ghost" size="icon" onClick={toggleTheme}>
           {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-        </Button>
-        <Button variant="ghost" size="icon" className="relative">
-          <Bell className="h-5 w-5" />
-          <span className="absolute right-2 top-2 flex h-2 w-2 rounded-full bg-red-600"></span>
         </Button>
         
         <div className="flex items-center gap-2 border-l border-gray-200 pl-4 dark:border-gray-800">

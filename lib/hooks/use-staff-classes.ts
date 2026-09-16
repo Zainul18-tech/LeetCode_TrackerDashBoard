@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Class } from "@/types"
 
-export type StaffRole = "HOD" | "Teacher" | "Tutor" | "Class Advisor"
+export type StaffRole = "HOD" | "Teacher" | "Tutor" | "Class Advisor" | "Dean"
 
 export type StaffProfile = {
   id: string
@@ -22,6 +22,16 @@ interface UseStaffClassesResult {
   classes: Class[]
   loading: boolean
   error: string | null
+}
+
+// Row shape returned by: class_staff.select("class_id, classes(*)")
+// Supabase returns an array for an embedded to-many relation even when,
+// as here, the FK makes it effectively 1:1 -- so `classes` can come back
+// as either a single object or a one-item array depending on how
+// PostgREST resolves the relationship.
+type ClassStaffRow = {
+  class_id: string
+  classes: Class | Class[] | null
 }
 
 /**
@@ -112,7 +122,13 @@ export function useStaffClasses(): UseStaffClassesResult {
           return
         }
 
-        classResults = (assignments || []).map((a: any) => a.classes).filter(Boolean) as Class[]
+        const rows = (assignments ?? []) as unknown as ClassStaffRow[]
+
+        classResults = rows
+          .map((row: ClassStaffRow): Class | null =>
+            Array.isArray(row.classes) ? row.classes[0] ?? null : row.classes
+          )
+          .filter((c: Class | null): c is Class => c !== null)
       }
 
       setClasses(classResults)

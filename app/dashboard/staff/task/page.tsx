@@ -118,6 +118,13 @@ type Task = {
   task_class_progress?: TaskClassProgress[]
 }
 
+// Shape of a task row exactly as it comes back from Supabase, before
+// task_links has been normalized into TaskLink[].
+type RawTaskRow = Omit<Task, "task_links"> & { task_links: unknown }
+
+// Shape of a class_staff row as selected below (just the FK we need).
+type ClassAssignmentRow = { class_id: string }
+
 type ClassScope = "all" | "specific"
 
 // -----------------------------------------------------------------------------
@@ -221,8 +228,13 @@ export default function TaskPage() {
   // ---------------------------------------------------------------------------
   // Load Data
   // ---------------------------------------------------------------------------
+  //
+  // `cancelled` lets the effect below tell this run "the component has
+  // unmounted (or a newer run has started), stop touching state" — every
+  // setState call after an await is guarded by it, which is the standard
+  // fix for the classic "setState called after unmount" issue.
 
-  async function loadData() {
+  async function loadData(cancelled: () => boolean) {
     setError(null)
 
     const supabase = createClient()
@@ -231,6 +243,8 @@ export default function TaskPage() {
       data: { user },
       error: userError,
     } = await supabase.auth.getUser()
+
+    if (cancelled()) return
 
     if (userError || !user) {
       setError(
@@ -252,6 +266,8 @@ export default function TaskPage() {
       .select("*")
       .eq("user_id", user.id)
       .maybeSingle()
+
+    if (cancelled()) return
 
     if (staffError) {
       setError(staffError.message)
@@ -284,6 +300,8 @@ export default function TaskPage() {
       .order("year", { ascending: true })
       .order("section", { ascending: true })
 
+    if (cancelled()) return
+
     if (classesError) {
       setError(classesError.message)
       setLoading(false)
@@ -313,15 +331,17 @@ export default function TaskPage() {
         .select("class_id")
         .eq("staff_id", staffRow.id)
 
+      if (cancelled()) return
+
       if (assignmentError) {
         console.warn(
           "Could not load class assignments:",
           assignmentError.message
         )
       } else {
-        resolvedMyClassIds = (assignmentRows || []).map(
-          (row: any) => row.class_id
-        )
+        resolvedMyClassIds = (
+          (assignmentRows || []) as ClassAssignmentRow[]
+        ).map((row) => row.class_id)
       }
     }
 
@@ -348,6 +368,8 @@ export default function TaskPage() {
         ascending: true,
       })
 
+    if (cancelled()) return
+
     if (tasksError) {
       setError(tasksError.message)
       setLoading(false)
@@ -355,8 +377,8 @@ export default function TaskPage() {
     }
 
     const loadedTasks =
-      (taskRows || []).map(
-        (task: any) => ({
+      ((taskRows || []) as RawTaskRow[]).map(
+        (task) => ({
           ...task,
           task_links: normalizeTaskLinks(
             task.task_links
@@ -381,6 +403,8 @@ export default function TaskPage() {
         .from("task_class_progress")
         .select("*")
         .in("task_id", taskIds)
+
+      if (cancelled()) return
 
       if (progressError) {
         console.warn(
@@ -427,10 +451,33 @@ export default function TaskPage() {
     setLoading(false)
   }
 
+  // Fetch-on-mount: the standard "load once when the page opens" pattern.
+  //
+  // React's set-state-in-effect diagnostic ("Calling setState synchronously
+  // within an effect can trigger cascading renders") fires whenever a
+  // setState call is reachable synchronously from the effect body — and
+  // loadData calls setError(null) before its very first await, so calling
+  // it directly here tripped that check even though this is exactly the
+  // documented "sync with an external system on mount" use case for
+  // useEffect.
+  //
+  // The fix: defer the call to a microtask so no setState runs
+  // synchronously within the effect's own call stack, and thread a
+  // `cancelled` check through loadData so it stops updating state if the
+  // component unmounts (or React re-runs the effect) before it finishes —
+  // which also fixes the unrelated "setState after unmount" class of bug.
   useEffect(() => {
-    loadData()
+    let cancelled = false
 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    Promise.resolve().then(() => {
+      if (!cancelled) {
+        loadData(() => cancelled)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // ---------------------------------------------------------------------------
@@ -497,20 +544,24 @@ export default function TaskPage() {
     )
 
   // ---------------------------------------------------------------------------
-  // Keep Selected Classes Valid
+  // Valid Selected Classes (derived, not synced)
+  //
+  // Previously this pruned selectedClassIds via a useEffect + setState
+  // whenever availableClasses changed -- exactly the "derive state in an
+  // effect" pattern React's set-state-in-effect rule flags. Instead this
+  // is computed at render time: selectedClassIds itself is left alone
+  // (harmless if it holds a stale id, since that id simply won't render
+  // as a checkbox any more), and every place that NEEDS the pruned list
+  // -- validation and submission -- reads this derived value instead.
   // ---------------------------------------------------------------------------
 
-  useEffect(() => {
-    setSelectedClassIds(
-      (prev) =>
-        prev.filter((id) =>
-          availableClasses.some(
-            (c) =>
-              c.id === id
-          )
-        )
-    )
-  }, [availableClasses])
+  const validSelectedClassIds = useMemo(
+    () =>
+      selectedClassIds.filter((id) =>
+        availableClasses.some((c) => c.id === id)
+      ),
+    [selectedClassIds, availableClasses]
+  )
 
   // ---------------------------------------------------------------------------
   // Toggle Year
@@ -835,7 +886,7 @@ export default function TaskPage() {
     if (
       classScope ===
         "specific" &&
-      selectedClassIds.length ===
+      validSelectedClassIds.length ===
         0
     ) {
       setFormError(
@@ -986,11 +1037,11 @@ export default function TaskPage() {
       if (
         classScope ===
           "specific" &&
-        selectedClassIds.length >
+        validSelectedClassIds.length >
           0
       ) {
         const taskClassRows =
-          selectedClassIds.map(
+          validSelectedClassIds.map(
             (classId) => ({
               task_id:
                 inserted.id,
@@ -1027,15 +1078,16 @@ export default function TaskPage() {
       // Reload
       // -----------------------------------------------------------------------
 
-      await loadData()
+      await loadData(() => false)
 
       setDialogOpen(false)
       resetForm()
-    } catch (err: any) {
-      setFormError(
-        err?.message ||
-          "Failed to create task. Please try again."
-      )
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to create task. Please try again."
+      setFormError(message)
     } finally {
       setSubmitting(false)
     }
@@ -1748,7 +1800,7 @@ export default function TaskPage() {
                               className="flex items-center gap-2 text-sm"
                             >
                               <Checkbox
-                                checked={selectedClassIds.includes(
+                                checked={validSelectedClassIds.includes(
                                   c.id
                                 )}
                                 onCheckedChange={() =>

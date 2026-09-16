@@ -85,6 +85,17 @@ type ClassRow = {
   section: string
 }
 
+// Shape of each row returned by the class_staff join query for
+// Tutor / Class Advisor staff. Supabase's generated types can report the
+// `classes` relation as either a single object or an array depending on
+// how it infers the foreign-key cardinality, so both possibilities are
+// modeled here explicitly instead of reaching for `any`.
+type ClassStaffJoinRow = {
+  class_id: string
+  role: string
+  classes: ClassRow | ClassRow[] | null
+}
+
 type ActivityLink = {
   title: string
   url: string
@@ -161,25 +172,37 @@ function getYearSuffix(year: number) {
   return "th"
 }
 
+// Narrows an unknown value down to a well-formed { title, url } shape
+// without ever casting to `any`. Anything that doesn't have both fields
+// as non-empty strings is dropped.
+function toActivityLink(item: unknown): ActivityLink | null {
+  if (
+    item &&
+    typeof item === "object" &&
+    "title" in item &&
+    "url" in item &&
+    typeof (item as { title: unknown }).title === "string" &&
+    typeof (item as { url: unknown }).url === "string"
+  ) {
+    const title = (item as { title: string }).title.trim()
+    const url = (item as { url: string }).url.trim()
+
+    if (title && url) {
+      return { title, url }
+    }
+  }
+
+  return null
+}
+
 function normalizeDocumentUrls(value: unknown): ActivityLink[] {
   if (!Array.isArray(value)) {
     return []
   }
 
   return value
-    .filter((item) => {
-      return (
-        item &&
-        typeof item === "object" &&
-        typeof (item as any).title === "string" &&
-        typeof (item as any).url === "string"
-      )
-    })
-    .map((item: any) => ({
-      title: item.title.trim(),
-      url: item.url.trim(),
-    }))
-    .filter((item) => item.title && item.url)
+    .map((item) => toActivityLink(item))
+    .filter((item): item is ActivityLink => item !== null)
 }
 
 function isValidUrl(url: string) {
@@ -193,6 +216,12 @@ function isValidUrl(url: string) {
   } catch {
     return false
   }
+}
+
+// Safely extracts a human-readable message from an unknown catch value
+// without resorting to `catch (err: any)`.
+function getErrorMessage(err: unknown, fallback: string) {
+  return err instanceof Error ? err.message : fallback
 }
 
 /* =========================================================
@@ -273,6 +302,7 @@ export default function ActivitiesPage() {
 
   useEffect(() => {
     loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /* =========================================================
@@ -396,9 +426,17 @@ export default function ActivitiesPage() {
         return
       }
 
-      classRows = (data || [])
-        .map((row: any) => row.classes)
-        .filter(Boolean) as ClassRow[]
+      const assignments = (data || []) as ClassStaffJoinRow[]
+
+      // `classes` may come back as a single object or an array depending
+      // on Supabase's inferred relation cardinality — normalize both.
+      classRows = assignments.flatMap((row) =>
+        Array.isArray(row.classes)
+          ? row.classes
+          : row.classes
+          ? [row.classes]
+          : []
+      )
 
       classRows = Array.from(
         new Map(
@@ -1292,10 +1330,12 @@ export default function ActivitiesPage() {
         staff,
         classes
       )
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(
-        err?.message ||
+        getErrorMessage(
+          err,
           "Failed to save activity."
+        )
       )
     } finally {
       setSaving(false)
@@ -1359,10 +1399,12 @@ export default function ActivitiesPage() {
         staff,
         classes
       )
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(
-        err?.message ||
+        getErrorMessage(
+          err,
           "Failed to delete activity."
+        )
       )
     }
   }
@@ -2643,7 +2685,8 @@ export default function ActivitiesPage() {
 
                             <td className="px-3 py-4">
                               <div className="flex items-center gap-1.5 text-sm">
-                                {activity.document_urls?.length >
+                                {activity.document_urls &&
+                                activity.document_urls.length >
                                 0 ? (
                                   <>
                                     <LinkIcon className="h-4 w-4 text-gray-400" />
@@ -3024,4 +3067,3 @@ export default function ActivitiesPage() {
     </DashboardLayout>
   )
 }
-

@@ -125,6 +125,23 @@ function isValidHttpUrl(value: string) {
   }
 }
 
+// Type guard used by normalizeLinks below. Keeping this as a real type
+// guard (rather than casting with `any` at each call site) is what lets
+// normalizeLinks read `.name` / `.url` off the filtered array without any
+// unsafe casts.
+function isLinkLike(
+  item: unknown
+): item is { name: string; url: string } {
+  return (
+    typeof item === "object" &&
+    item !== null &&
+    typeof (item as Record<string, unknown>).name ===
+      "string" &&
+    typeof (item as Record<string, unknown>).url ===
+      "string"
+  )
+}
+
 function normalizeLinks(
   value: unknown
 ): TaskLink[] {
@@ -133,20 +150,10 @@ function normalizeLinks(
   }
 
   return value
-    .filter(
-      (item) =>
-        item &&
-        typeof item === "object" &&
-        typeof (item as any).name === "string" &&
-        typeof (item as any).url === "string"
-    )
+    .filter(isLinkLike)
     .map((item) => ({
-      name: String(
-        (item as any).name
-      ),
-      url: String(
-        (item as any).url
-      ),
+      name: item.name,
+      url: item.url,
     }))
     .filter(
       (item) =>
@@ -155,6 +162,56 @@ function normalizeLinks(
           item.url.trim()
         )
     )
+}
+
+function errorMessage(
+  err: unknown,
+  fallback: string
+) {
+  return err instanceof Error
+    ? err.message
+    : fallback
+}
+
+// -----------------------------------------------------------------------------
+// Status Badge
+//
+// Moved out of the page component so it isn't re-declared on every render
+// (declaring a component inside another component's body creates a new
+// component type each render, which resets its internal state and trips
+// React's "components created during render" diagnostic). It doesn't
+// close over any page state, so it belongs at module scope regardless.
+// -----------------------------------------------------------------------------
+
+function StatusBadge({
+  status,
+}: {
+  status: ProgressStatus
+}) {
+  if (status === "Done") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1.5 text-xs font-medium text-green-700 dark:bg-green-950/40 dark:text-green-400">
+        <CheckCircle2 className="h-3.5 w-3.5" />
+        Completed
+      </span>
+    )
+  }
+
+  if (status === "In Progress") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-3 py-1.5 text-xs font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">
+        <Clock3 className="h-3.5 w-3.5" />
+        In Progress
+      </span>
+    )
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+      <Clock3 className="h-3.5 w-3.5" />
+      Pending
+    </span>
+  )
 }
 
 // -----------------------------------------------------------------------------
@@ -357,9 +414,15 @@ export default function TaskDetailsClassPage() {
 
   // ---------------------------------------------------------------------------
   // Load Page
+  //
+  // `cancelled` lets the effect below tell an in-flight load "stop, a
+  // newer run started (or the component unmounted)" -- checked after every
+  // await so a slow request can't clobber state that no longer applies.
   // ---------------------------------------------------------------------------
 
-  async function loadPage() {
+  async function loadPage(
+    cancelled: () => boolean
+  ) {
     setLoading(true)
     setError(null)
 
@@ -375,6 +438,8 @@ export default function TaskDetailsClassPage() {
         error: userError,
       } =
         await supabase.auth.getUser()
+
+      if (cancelled()) return
 
       if (
         userError ||
@@ -401,6 +466,8 @@ export default function TaskDetailsClassPage() {
             user.id
           )
           .maybeSingle()
+
+      if (cancelled()) return
 
       if (staffError) {
         throw staffError
@@ -435,6 +502,8 @@ export default function TaskDetailsClassPage() {
             taskId
           )
           .maybeSingle()
+
+      if (cancelled()) return
 
       if (taskError) {
         throw taskError
@@ -474,6 +543,8 @@ export default function TaskDetailsClassPage() {
             classId
           )
           .maybeSingle()
+
+      if (cancelled()) return
 
       if (classError) {
         throw classError
@@ -515,6 +586,8 @@ export default function TaskDetailsClassPage() {
             classId
           )
           .maybeSingle()
+
+      if (cancelled()) return
 
       if (
         taskClassLinkError
@@ -593,6 +666,8 @@ export default function TaskDetailsClassPage() {
           )
           .maybeSingle()
 
+      if (cancelled()) return
+
       if (progressError) {
         console.warn(
           "Could not load progress:",
@@ -662,29 +737,57 @@ export default function TaskDetailsClassPage() {
           "This class task has not been completed by staff yet."
         )
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      if (cancelled()) return
+
       setError(
-        err?.message ||
+        errorMessage(
+          err,
           "Failed to load task details."
+        )
       )
     } finally {
-      setLoading(false)
+      if (!cancelled()) {
+        setLoading(false)
+      }
     }
   }
 
+  // Fetch-on-mount: the standard "load once when the page opens" pattern.
+  //
+  // React's set-state-in-effect diagnostic flags any setState reachable
+  // synchronously from the effect body. Previously the `!taskId ||
+  // !classId` guard called setError/setLoading directly in the effect,
+  // and loadPage itself calls setLoading(true) before its first await --
+  // both run synchronously if invoked straight from the effect. Deferring
+  // everything to a microtask keeps the exact same "fetch once per
+  // taskId/classId" behavior while ensuring no setState runs synchronously
+  // within the effect's own call stack. The `cancelled` flag threaded into
+  // loadPage additionally stops it from updating state once a newer run
+  // has started or the component has unmounted.
   useEffect(() => {
-    if (
-      !taskId ||
-      !classId
-    ) {
-      setError(
-        "Invalid task or class."
-      )
-      setLoading(false)
-      return
-    }
+    let cancelled = false
 
-    loadPage()
+    Promise.resolve().then(() => {
+      if (cancelled) return
+
+      if (
+        !taskId ||
+        !classId
+      ) {
+        setError(
+          "Invalid task or class."
+        )
+        setLoading(false)
+        return
+      }
+
+      loadPage(() => cancelled)
+    })
+
+    return () => {
+      cancelled = true
+    }
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -806,10 +909,12 @@ export default function TaskDetailsClassPage() {
         setSuccess(
           "Task started successfully."
         )
-      } catch (err: any) {
+      } catch (err: unknown) {
         setError(
-          err?.message ||
+          errorMessage(
+            err,
             "Failed to start task."
+          )
         )
       } finally {
         setSaving(false)
@@ -986,10 +1091,12 @@ export default function TaskDetailsClassPage() {
         setSuccess(
           "Progress saved successfully."
         )
-      } catch (err: any) {
+      } catch (err: unknown) {
         setError(
-          err?.message ||
+          errorMessage(
+            err,
             "Failed to save progress."
+          )
         )
       } finally {
         setSaving(false)
@@ -1024,10 +1131,12 @@ export default function TaskDetailsClassPage() {
       try {
         validResponseLinks =
           validateResponseLinks()
-      } catch (err: any) {
+      } catch (err: unknown) {
         setError(
-          err?.message ||
+          errorMessage(
+            err,
             "Please check the response links."
+          )
         )
         return
       }
@@ -1049,7 +1158,10 @@ export default function TaskDetailsClassPage() {
         const supabase =
           createClient()
 
-        let progressId =
+        // progress?.id is read once and never reassigned in this
+        // function (unlike handleSaveProgress, which inserts a fresh row
+        // and then needs the new id), so this stays a const.
+        const progressId =
           progress?.id
 
         if (!progressId) {
@@ -1172,10 +1284,12 @@ export default function TaskDetailsClassPage() {
         setSuccess(
           "Task completed successfully."
         )
-      } catch (err: any) {
+      } catch (err: unknown) {
         setError(
-          err?.message ||
+          errorMessage(
+            err,
             "Failed to complete task."
+          )
         )
       } finally {
         setSaving(false)
@@ -1202,46 +1316,6 @@ export default function TaskDetailsClassPage() {
         month: "short",
         day: "numeric",
       }
-    )
-  }
-
-  // ---------------------------------------------------------------------------
-  // Status Badge
-  // ---------------------------------------------------------------------------
-
-  const StatusBadge = ({
-    status,
-  }: {
-    status: ProgressStatus
-  }) => {
-    if (
-      status === "Done"
-    ) {
-      return (
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1.5 text-xs font-medium text-green-700 dark:bg-green-950/40 dark:text-green-400">
-          <CheckCircle2 className="h-3.5 w-3.5" />
-          Completed
-        </span>
-      )
-    }
-
-    if (
-      status ===
-      "In Progress"
-    ) {
-      return (
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-3 py-1.5 text-xs font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">
-          <Clock3 className="h-3.5 w-3.5" />
-          In Progress
-        </span>
-      )
-    }
-
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-        <Clock3 className="h-3.5 w-3.5" />
-        Pending
-      </span>
     )
   }
 

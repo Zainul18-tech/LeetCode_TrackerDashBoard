@@ -23,20 +23,22 @@ export function Tabs({
   children: React.ReactNode
   className?: string
 }) {
-  const [currentValue, setCurrentValue] = React.useState(value || defaultValue || "")
+  // Uncontrolled fallback state -- only used when the caller doesn't pass
+  // `value`. When `value` IS passed, it's the single source of truth and
+  // this state is simply never read, so there's nothing to keep in sync
+  // and no need for a useEffect (which would cause an extra render pass
+  // every time `value` changes).
+  const [uncontrolledValue, setUncontrolledValue] = React.useState(defaultValue || "")
+
+  const isControlled = value !== undefined
+  const currentValue = isControlled ? value : uncontrolledValue
 
   const handleValueChange = (newValue: string) => {
-    setCurrentValue(newValue)
-    if (onValueChange) {
-      onValueChange(newValue)
+    if (!isControlled) {
+      setUncontrolledValue(newValue)
     }
+    onValueChange?.(newValue)
   }
-
-  React.useEffect(() => {
-    if (value !== undefined) {
-      setCurrentValue(value)
-    }
-  }, [value])
 
   return (
     <TabsContext.Provider value={{ value: currentValue, onValueChange: handleValueChange }}>

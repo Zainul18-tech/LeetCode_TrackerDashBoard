@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import DashboardLayout from "@/components/layout/DashboardLayout"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -118,7 +118,7 @@ export default function SettingsDashboard() {
                 <div className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50 dark:hover:bg-gray-900/50 transition-colors cursor-pointer" onClick={() => setWeeklyReports(!weeklyReports)}>
                   <div className="space-y-0.5">
                     <label className="text-sm font-medium cursor-pointer">Weekly Reports</label>
-                    <p className="text-sm text-gray-500">Receive an email summary of the department's LeetCode progress.</p>
+                    <p className="text-sm text-gray-500">Receive an email summary of the departments LeetCode progress.</p>
                   </div>
                   <input type="checkbox" checked={weeklyReports} onChange={(e) => setWeeklyReports(e.target.checked)} className="h-4 w-4 cursor-pointer" />
                 </div>

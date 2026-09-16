@@ -11,10 +11,10 @@ import { OverviewBarChart, DifficultyPieChart } from "@/components/ui/charts"
 import { MOCK_CHART_DATA } from "@/lib/mock-data"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Download, Search, CheckCircle2, ArrowUpRight, Save, UserCircle, Loader2 } from "lucide-react"
+import { Download, Search, ArrowUpRight, Save, UserCircle, Loader2 } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
-import { Class, Student, WeeklyRecord, WeeklyStudentProgress } from "@/types"
+import { Class, Student, WeeklyStudentProgress } from "@/types"
 
 export default function ClassDashboard() {
   const params = useParams()
@@ -24,7 +24,6 @@ export default function ClassDashboard() {
   
   const [classData, setClassData] = useState<Class | null>(null)
   const [students, setStudents] = useState<Student[]>([])
-  const [records, setRecords] = useState<WeeklyRecord[]>([])
   const [progress, setProgress] = useState<WeeklyStudentProgress[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -51,24 +50,24 @@ export default function ClassDashboard() {
         setStudents(studentsResult)
       }
       
+      // recordsResult is only needed here to find the latest week's id for
+      // the progress query below -- it isn't rendered anywhere, so it's
+      // kept as a local variable rather than component state (which was
+      // being set but never read).
       const { data: recordsResult } = await supabase
         .from('weekly_records')
         .select('*')
         .eq('class_id', classId)
         .order('week_number', { ascending: false })
-        
-      if (recordsResult) {
-        setRecords(recordsResult)
-        
-        if (recordsResult.length > 0) {
-          const { data: progressResult } = await supabase
-            .from('weekly_student_progress')
-            .select('*')
-            .eq('record_id', recordsResult[0].id)
-            
-          if (progressResult) {
-            setProgress(progressResult)
-          }
+
+      if (recordsResult && recordsResult.length > 0) {
+        const { data: progressResult } = await supabase
+          .from('weekly_student_progress')
+          .select('*')
+          .eq('record_id', recordsResult[0].id)
+
+        if (progressResult) {
+          setProgress(progressResult)
         }
       }
       
