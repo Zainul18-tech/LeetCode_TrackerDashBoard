@@ -11,6 +11,8 @@ const nextConfig = {
         // Broader wildcard so you don't have to edit this every time
         // devtunnels assigns a new random subdomain:
         "*.inc1.devtunnels.ms",
+        // Production Vercel deployment
+        "ngpitech-leetcode-tracker.vercel.app",
       ],
     },
   },
