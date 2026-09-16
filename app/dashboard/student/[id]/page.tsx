@@ -5,9 +5,27 @@ import { useParams } from "next/navigation"
 import DashboardLayout from "@/components/layout/DashboardLayout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { GitBranch as Github, Code2, Target, Award, Trophy, UserCircle, Loader2, ExternalLink } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import {
+  GitBranch as Github,
+  Code2,
+  Target,
+  Award,
+  Trophy,
+  UserCircle,
+  Loader2,
+  ExternalLink,
+  CheckCircle2,
+  History,
+  AlertCircle,
+  FileSpreadsheet,
+  FileText,
+} from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { Class } from "@/types"
+import * as XLSX from "xlsx"
+import jsPDF from "jspdf"
+import autoTable from "jspdf-autotable"
 
 // Matches public.student_summary
 type StudentSummaryRow = {
@@ -72,6 +90,83 @@ type CurrentStaff = {
   role: DashboardRole
 }
 
+// Shape returned by the "acsubmission" endpoint of the alfa-leetcode-api,
+// e.g. https://alfa-leetcode-api.onrender.com/{username}/acsubmission
+type LeetCodeAcSubmission = {
+  title: string
+  titleSlug: string
+  timestamp: string
+  statusDisplay: string
+  lang: string
+}
+
+type LeetCodeAcSubmissionResponse = {
+  count?: number
+  submission?: LeetCodeAcSubmission[]
+}
+
+const LEETCODE_SUBMISSIONS_API_BASE =
+  "https://alfa-leetcode-api.onrender.com"
+
+// Renders a submission timestamp (seconds since epoch, delivered as a
+// string by the API) as a short, readable date/time.
+function formatSubmissionTimestamp(timestamp: string): string {
+  const seconds = Number(timestamp)
+  if (!Number.isFinite(seconds)) return ""
+  const date = new Date(seconds * 1000)
+  if (Number.isNaN(date.getTime())) return ""
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+}
+
+// Friendly display name for a LeetCode "lang" code (falls back to the raw
+// value for anything not explicitly mapped).
+const LANGUAGE_LABELS: Record<string, string> = {
+  python3: "Python3",
+  python: "Python",
+  java: "Java",
+  cpp: "C++",
+  c: "C",
+  javascript: "JavaScript",
+  typescript: "TypeScript",
+  golang: "Go",
+  csharp: "C#",
+  swift: "Swift",
+  kotlin: "Kotlin",
+  ruby: "Ruby",
+  rust: "Rust",
+  scala: "Scala",
+  php: "PHP",
+}
+
+function formatLanguage(lang: string): string {
+  return LANGUAGE_LABELS[lang] ?? lang
+}
+
+// Builds a filesystem-safe export filename (no extension) from an ordered
+// list of identity parts, e.g. buildExportFileName(["Zainul Abideen A", "21CS045"])
+// -> "Zainul_Abideen_A_21CS045_recent_submissions". Empty/missing parts are
+// skipped so the name still comes out clean if some field isn't set.
+function buildExportFileName(parts: Array<string | null | undefined>): string {
+  const slug = parts
+    .filter((part): part is string => Boolean(part && part.trim()))
+    .map((part) =>
+      part
+        .trim()
+        .replace(/[^a-zA-Z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+    )
+    .filter(Boolean)
+    .join("_")
+
+  return `${slug || "student"}_recent_submissions`
+}
+
 export default function StudentProfile() {
   const params = useParams<{ id: string }>()
   // The "View Profile" link passes the student's reg_no in this segment
@@ -83,6 +178,14 @@ export default function StudentProfile() {
   const [currentStaff, setCurrentStaff] = useState<CurrentStaff | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // Recent LeetCode submissions (fetched separately from the student
+  // record, since it comes from an external API rather than Supabase).
+  const [submissions, setSubmissions] = useState<LeetCodeAcSubmission[]>([])
+  const [submissionsLoading, setSubmissionsLoading] = useState(false)
+  const [submissionsError, setSubmissionsError] = useState<string | null>(
+    null
+  )
 
   useEffect(() => {
     let isMounted = true
@@ -180,6 +283,153 @@ export default function StudentProfile() {
       isMounted = false
     }
   }, [regNo])
+
+  // Fetch the student's most recent accepted LeetCode submissions once we
+  // know their username. Kept in its own effect (rather than inline in
+  // loadData) so a slow/unavailable third-party API never blocks or fails
+  // the core Supabase-backed profile data above.
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadSubmissions(username: string) {
+      setSubmissionsLoading(true)
+      setSubmissionsError(null)
+
+      try {
+        const response = await fetch(
+          `${LEETCODE_SUBMISSIONS_API_BASE}/${encodeURIComponent(
+            username
+          )}/acsubmission`
+        )
+
+        if (!isMounted) return
+
+        if (!response.ok) {
+          throw new Error(
+            `LeetCode API responded with status ${response.status}`
+          )
+        }
+
+        const data: LeetCodeAcSubmissionResponse = await response.json()
+
+        if (!isMounted) return
+
+        const list = Array.isArray(data.submission) ? data.submission : []
+        setSubmissions(list.slice(0, 20))
+      } catch (err) {
+        if (!isMounted) return
+        setSubmissions([])
+        setSubmissionsError(
+          err instanceof Error
+            ? err.message
+            : "Failed to load recent submissions."
+        )
+      } finally {
+        if (isMounted) {
+          setSubmissionsLoading(false)
+        }
+      }
+    }
+
+    // Same rationale as the profile-loading effect above: neither the
+    // "no username" reset branch nor kicking off loadSubmissions (which
+    // calls setSubmissionsLoading(true) before its first await) may run
+    // synchronously within the effect's own call stack, or React's
+    // set-state-in-effect check flags it. Deferring into a microtask keeps
+    // the same behavior while avoiding a synchronous setState.
+    Promise.resolve().then(() => {
+      if (!isMounted) return
+
+      const username = student?.leetcode_username
+
+      if (!username) {
+        setSubmissions([])
+        setSubmissionsError(null)
+        setSubmissionsLoading(false)
+        return
+      }
+
+      loadSubmissions(username)
+    })
+
+    return () => {
+      isMounted = false
+    }
+  }, [student?.leetcode_username])
+
+  // Exports ONLY the recent-submissions list currently loaded in state —
+  // not the profile header or stats grid. Both handlers are no-ops when
+  // there's nothing to export, and are wired to disabled buttons in that
+  // case anyway (see the Recent Submissions card below).
+  function buildSubmissionRows() {
+    return submissions.map((submission, index) => ({
+      "#": index + 1,
+      Problem: submission.title,
+      Status: submission.statusDisplay,
+      Language: formatLanguage(submission.lang),
+      "Submitted On": formatSubmissionTimestamp(submission.timestamp),
+      Link: `https://leetcode.com/problems/${submission.titleSlug}/`,
+    }))
+  }
+
+  function handleExportExcel() {
+    if (submissions.length === 0) return
+
+    const rows = buildSubmissionRows()
+    const worksheet = XLSX.utils.json_to_sheet(rows)
+    // Give columns sensible widths instead of the default auto-fit, which
+    // tends to leave the "Problem" and "Link" columns unreadably narrow.
+    worksheet["!cols"] = [
+      { wch: 4 },
+      { wch: 42 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 20 },
+      { wch: 55 },
+    ]
+
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Recent Submissions")
+
+    const fileBase = buildExportFileName([student?.name, student?.reg_no])
+    XLSX.writeFile(workbook, `${fileBase}.xlsx`)
+  }
+
+  function handleExportPdf() {
+    if (submissions.length === 0) return
+
+    const doc = new jsPDF()
+
+    doc.setFontSize(14)
+    doc.text("Recent LeetCode Submissions", 14, 16)
+
+    doc.setFontSize(10)
+    doc.setTextColor(100)
+    const subtitleParts = [student?.name, student?.leetcode_username].filter(
+      Boolean
+    )
+    if (subtitleParts.length > 0) {
+      doc.text(subtitleParts.join(" · "), 14, 22)
+    }
+
+    autoTable(doc, {
+      startY: subtitleParts.length > 0 ? 28 : 22,
+      head: [["#", "Problem", "Status", "Language", "Submitted On"]],
+      body: submissions.map((submission, index) => [
+        index + 1,
+        submission.title,
+        submission.statusDisplay,
+        formatLanguage(submission.lang),
+        formatSubmissionTimestamp(submission.timestamp),
+      ]),
+      styles: { fontSize: 9, cellPadding: 3 },
+      headStyles: { fillColor: [37, 99, 235], textColor: 255 },
+      columnStyles: { 0: { cellWidth: 10 } },
+    })
+
+    const fileBase = buildExportFileName([student?.name, student?.reg_no])
+    doc.save(`${fileBase}.pdf`)
+  }
 
   if (loading) {
     return (
@@ -329,7 +579,94 @@ export default function StudentProfile() {
           </Card>
         </div>
 
-       
+        {/* Recent Submissions */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2 gap-4">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <History className="h-4 w-4" />
+              Recent Submissions
+              {submissions.length > 0 && (
+                <Badge variant="outline" className="font-mono">
+                  {submissions.length}
+                </Badge>
+              )}
+            </CardTitle>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5"
+                disabled={submissions.length === 0}
+                onClick={handleExportExcel}
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" />
+                Excel
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5"
+                disabled={submissions.length === 0}
+                onClick={handleExportPdf}
+              >
+                <FileText className="h-3.5 w-3.5" />
+                PDF
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {!student.leetcode_username ? (
+              <p className="text-sm text-gray-500">
+                No LeetCode username is linked to this student.
+              </p>
+            ) : submissionsLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+              </div>
+            ) : submissionsError ? (
+              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400 py-4">
+                <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                <span>{submissionsError}</span>
+              </div>
+            ) : submissions.length === 0 ? (
+              <p className="text-sm text-gray-500">
+                No accepted submissions found yet.
+              </p>
+            ) : (
+              <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+                {submissions.map((submission, index) => (
+                  <li
+                    key={`${submission.titleSlug}-${submission.timestamp}-${index}`}
+                    className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-green-500" />
+                      <a
+                        href={`https://leetcode.com/problems/${submission.titleSlug}/`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="truncate font-medium text-sm hover:text-blue-600 hover:underline"
+                        title={submission.title}
+                      >
+                        {submission.title}
+                      </a>
+                    </div>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <Badge variant="secondary" className="font-mono text-xs">
+                        {formatLanguage(submission.lang)}
+                      </Badge>
+                      <span className="text-xs text-gray-500 whitespace-nowrap">
+                        {formatSubmissionTimestamp(submission.timestamp)}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </DashboardLayout>
   )
